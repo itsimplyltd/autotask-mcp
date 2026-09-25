@@ -25,6 +25,7 @@ import { McpServerConfig } from '../types/mcp.js';
 import { EnvironmentConfig, parseCredentialsFromHeaders, GatewayCredentials, getServerVersion } from '../utils/config.js';
 import { AutotaskResourceHandler } from '../handlers/resource.handler.js';
 import { AutotaskToolHandler } from '../handlers/tool.handler.js';
+import { TOOL_DEFINITIONS, TOOL_CATEGORIES } from '../handlers/tool.definitions.js';
 import { registerPromptHandlers } from './prompts.js';
 import { verifyS2sHeader, S2S_HEADER } from './s2s-verify.js';
 
@@ -462,6 +463,23 @@ export class AutotaskMcpServer {
    * Get server instructions for clients
    */
   private getServerInstructions(): string {
+    const metaToolCount = 4;
+    const totalToolCount = TOOL_DEFINITIONS.length;
+    const discoverableToolCount = totalToolCount - metaToolCount;
+    const categoryBreakdown = Object.entries(TOOL_CATEGORIES)
+      .map(([name, { description, tools }]) => `- **${name}** (${tools.length}): ${description}`)
+      .join('\n');
+
+    const availableToolsSection = this.lazyLoading
+      ? `## Available Tools (${totalToolCount} total; this server has LAZY_LOADING=true):
+Only the 4 meta-tools above are exposed directly. The other ${discoverableToolCount} tools are reachable through discovery: browse or keyword-search them with autotask_list_categories / autotask_list_category_tools, then invoke the one you need via autotask_execute_tool. The full catalogue, by category:
+
+${categoryBreakdown}`
+      : `## Available Tools (${totalToolCount} total; this server has LAZY_LOADING=false):
+All tools below are exposed directly, by category:
+
+${categoryBreakdown}`;
+
     return `
 # Autotask MCP Server
 
@@ -470,10 +488,11 @@ This server provides access to Kaseya Autotask PSA data and operations through t
 ## Available Resources:
 - **autotask://companies/{id}** - Get company details by ID
 - **autotask://companies** - List all companies
-- **autotask://contacts/{id}** - Get contact details by ID  
+- **autotask://contacts/{id}** - Get contact details by ID
 - **autotask://contacts** - List all contacts
 - **autotask://tickets/{id}** - Get ticket details by ID
 - **autotask://tickets** - List all tickets
+- **autotask://time-entries** - List time entries
 
 ## Progressive Discovery (Lazy Loading):
 When LAZY_LOADING=true, only 4 meta-tools are exposed initially:
@@ -484,21 +503,7 @@ When LAZY_LOADING=true, only 4 meta-tools are exposed initially:
 
 Recommended flow: call autotask_list_categories OR autotask_list_category_tools with a "query" to find the right tool by keyword, then call autotask_execute_tool with that tool's name and arguments.
 
-## Available Tools (39 total):
-- Companies: search, create, update
-- Contacts: search, create
-- Tickets: search, get details, create
-- Time entries: create
-- Projects: search, create
-- Resources: search
-- Notes: get/search/create for tickets, projects, companies
-- Attachments: get/search ticket attachments
-- Financial: expense reports, quotes, quote items (CRUD), invoices, contracts
-- Sales: opportunities, products, services, service bundles
-- Configuration items: search
-- Tasks: search, create
-- Picklists: list queues, list ticket statuses, list ticket priorities, get field info
-- Utility: test connection
+${availableToolsSection}
 
 ## Picklist Discovery:
 Use autotask_list_queues, autotask_list_ticket_statuses, or autotask_list_ticket_priorities to discover valid IDs before filtering. Use autotask_get_field_info for any entity's field definitions and picklist values.
