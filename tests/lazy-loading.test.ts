@@ -62,6 +62,38 @@ describe('Lazy Loading - Tool Categories', () => {
     expect(toolNames.has('autotask_list_category_tools')).toBe(true);
     expect(toolNames.has('autotask_execute_tool')).toBe(true);
   });
+
+  test('every non-meta TOOL_DEFINITIONS entry appears in exactly one category', () => {
+    const META_TOOLS = new Set([
+      'autotask_list_categories',
+      'autotask_list_category_tools',
+      'autotask_execute_tool',
+      'autotask_router'
+    ]);
+    const categoryCounts = new Map<string, number>();
+    for (const cat of Object.values(TOOL_CATEGORIES)) {
+      for (const toolName of cat.tools) {
+        categoryCounts.set(toolName, (categoryCounts.get(toolName) || 0) + 1);
+      }
+    }
+
+    const uncategorized: string[] = [];
+    const duplicated: string[] = [];
+    for (const tool of TOOL_DEFINITIONS) {
+      if (META_TOOLS.has(tool.name)) continue;
+      const count = categoryCounts.get(tool.name) || 0;
+      if (count === 0) uncategorized.push(tool.name);
+      else if (count > 1) duplicated.push(tool.name);
+    }
+
+    expect(uncategorized).toEqual([]);
+    expect(duplicated).toEqual([]);
+
+    // Every categorized tool name should also be a real, defined tool (no ghost references).
+    const toolNames = new Set(TOOL_DEFINITIONS.map(t => t.name));
+    const ghosts = [...categoryCounts.keys()].filter(name => !toolNames.has(name));
+    expect(ghosts).toEqual([]);
+  });
 });
 
 describe('Lazy Loading - Tool Handler', () => {
@@ -118,6 +150,72 @@ describe('Lazy Loading - Tool Handler', () => {
     expect(result.isError).toBe(true);
     const parsed = JSON.parse(result.content[0].text);
     expect(parsed.error).toContain('Unknown category');
+  });
+});
+
+describe('autotask_list_category_tools - keyword search', () => {
+  test('errors when neither category nor query is given', async () => {
+    const service = new AutotaskService(mockConfig, mockLogger);
+    const handler = new AutotaskToolHandler(service, mockLogger, true);
+    const result = await handler.callTool('autotask_list_category_tools', {});
+    expect(result.isError).toBe(true);
+    const parsed = JSON.parse(result.content[0].text);
+    expect(parsed.error).toContain('autotask_list_categories');
+  });
+
+  test('a query with no matches returns an empty result, not an error', async () => {
+    const service = new AutotaskService(mockConfig, mockLogger);
+    const handler = new AutotaskToolHandler(service, mockLogger, true);
+    const result = await handler.callTool('autotask_list_category_tools', { query: 'zzznomatchxyz999' });
+    expect(result.isError).toBeFalsy();
+    const parsed = JSON.parse(result.content[0].text);
+    expect(parsed.data).toEqual([]);
+  });
+
+  test('ranks a name match above a description-only match, and attaches the owning category', async () => {
+    const service = new AutotaskService(mockConfig, mockLogger);
+    const handler = new AutotaskToolHandler(service, mockLogger, true);
+    const result = await handler.callTool('autotask_list_category_tools', { query: 'ticket note' });
+    const parsed = JSON.parse(result.content[0].text);
+    const names = parsed.data.map((t: any) => t.name);
+    // autotask_search_ticket_notes / autotask_create_ticket_note / autotask_get_ticket_note match
+    // both query tokens directly in the tool name, so they should rank at (or near) the top.
+    expect(names[0]).toMatch(/ticket_note/);
+    const top = parsed.data[0];
+    expect(top.category).toBe('tickets');
+    expect(top.inputSchema).toBeDefined();
+  });
+
+  test('respects a custom limit and caps it at 25', async () => {
+    const service = new AutotaskService(mockConfig, mockLogger);
+    const handler = new AutotaskToolHandler(service, mockLogger, true);
+
+    const limited = await handler.callTool('autotask_list_category_tools', { query: 'ticket', limit: 3 });
+    const limitedParsed = JSON.parse(limited.content[0].text);
+    expect(limitedParsed.data.length).toBeLessThanOrEqual(3);
+
+    const overLimit = await handler.callTool('autotask_list_category_tools', { query: 'ticket', limit: 999 });
+    const overLimitParsed = JSON.parse(overLimit.content[0].text);
+    expect(overLimitParsed.data.length).toBeLessThanOrEqual(25);
+  });
+
+  test('defaults to 10 results when no limit is given', async () => {
+    const service = new AutotaskService(mockConfig, mockLogger);
+    const handler = new AutotaskToolHandler(service, mockLogger, true);
+    const result = await handler.callTool('autotask_list_category_tools', { query: 'ticket' });
+    const parsed = JSON.parse(result.content[0].text);
+    expect(parsed.data.length).toBeLessThanOrEqual(10);
+  });
+
+  test('a query scoped to a category only searches within that category', async () => {
+    const service = new AutotaskService(mockConfig, mockLogger);
+    const handler = new AutotaskToolHandler(service, mockLogger, true);
+    const result = await handler.callTool('autotask_list_category_tools', { category: 'financial', query: 'ticket' });
+    const parsed = JSON.parse(result.content[0].text);
+    for (const tool of parsed.data) {
+      expect(TOOL_CATEGORIES.financial.tools).toContain(tool.name);
+      expect(tool.category).toBe('financial');
+    }
   });
 });
 

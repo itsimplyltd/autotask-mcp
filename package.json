@@ -1,6 +1,6 @@
 {
   "name": "@wyre-ai/autotask-mcp",
-  "version": "2.18.0",
+  "version": "2.18.1",
   "description": "MCP (Model Context Protocol) server for Kaseya Autotask PSA integration",
   "main": "dist/entry.js",
   "bin": {

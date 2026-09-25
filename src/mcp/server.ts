@@ -476,12 +476,13 @@ This server provides access to Kaseya Autotask PSA data and operations through t
 - **autotask://tickets** - List all tickets
 
 ## Progressive Discovery (Lazy Loading):
-When LAZY_LOADING=true, only 3 meta-tools are exposed initially:
+When LAZY_LOADING=true, only 4 meta-tools are exposed initially:
 - **autotask_list_categories** - List all available tool categories with descriptions and tool counts
-- **autotask_list_category_tools** - Get full tool schemas for a specific category
+- **autotask_list_category_tools** - Get full tool schemas for a category, and/or keyword-search tool names and descriptions across all categories (pass "query")
 - **autotask_execute_tool** - Execute any tool by name with arguments (used in lazy loading mode)
+- **autotask_router** - Suggest a tool from a natural-language description of the task
 
-Use autotask_list_categories to discover available tool categories, then autotask_list_category_tools to get full schemas for a category, then autotask_execute_tool to call the desired tool.
+Recommended flow: call autotask_list_categories OR autotask_list_category_tools with a "query" to find the right tool by keyword, then call autotask_execute_tool with that tool's name and arguments.
 
 ## Available Tools (39 total):
 - Companies: search, create, update

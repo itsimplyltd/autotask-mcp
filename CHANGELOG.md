@@ -2,10 +2,15 @@
 
 ### Added
 
+- **Keyword search for lazy-loading tool discovery.** `autotask_list_category_tools` now accepts an optional `query` alongside (or instead of) `category`: with a query alone it ranks tool names/descriptions across all categories (name hits outweigh description hits) and returns up to `limit` (default 10, max 25) full schemas tagged with their category; with both, it searches within that category; with neither, it errors and points to `autotask_list_categories`.
 - **Contract service lines and billed units (read-only)**. Five tools close the gap between a contract header and what is actually invoiced:
   - `autotask_search_contract_services` / `autotask_search_contract_service_bundles` — the service and bundle line items on a contract, with contract-specific unit price.
   - `autotask_search_contract_service_units` / `autotask_search_contract_service_bundle_units` — the billed quantity and price per line over a date range, defaulting to rows active today.
   - `autotask_get_contract_recurring_lines` — one-call roll-up per contract: every active line joined to the catalog (service name, vendor, billing period) and normalized to a monthly total, for MRR reporting and licensing reconciliation. Period types that cannot be resolved from the `Services.periodType` picklist are reported in `unresolvedPeriodTypes` instead of guessed.
+
+### Fixed
+
+- **Eight tools were unreachable in lazy-loading mode** (`autotask_update_contact`, `autotask_update_project`, the four `autotask_*_ticket_checklist_item(s)` tools, `autotask_get_invoice_details`, `autotask_raw_request`) because they were defined but never assigned to a category, so `autotask_list_category_tools` couldn't surface them. All eight are now categorized, and a test (`every non-meta TOOL_DEFINITIONS entry appears in exactly one category`) guards against this drifting again.
 
 ### Changed
 

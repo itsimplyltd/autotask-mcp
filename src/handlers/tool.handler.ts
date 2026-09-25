@@ -87,6 +87,42 @@ export interface McpToolResult {
   isError?: boolean;
 }
 
+/** The four always-listed discovery/dispatch tools; never returned by keyword search or category listings. */
+const META_TOOL_NAMES = new Set([
+  'autotask_list_categories',
+  'autotask_list_category_tools',
+  'autotask_execute_tool',
+  'autotask_router'
+]);
+
+const SEARCH_NAME_WEIGHT = 5;
+const SEARCH_DESCRIPTION_WEIGHT = 1;
+const SEARCH_DEFAULT_LIMIT = 10;
+const SEARCH_MAX_LIMIT = 25;
+
+function tokenizeQuery(query: string): string[] {
+  return query.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+}
+
+/** Simple tokenised relevance score: a token found in the tool name outweighs one only found in the description. */
+function scoreToolMatch(tool: McpTool, queryTokens: string[]): number {
+  const name = tool.name.toLowerCase();
+  const description = (tool.description || '').toLowerCase();
+  let score = 0;
+  for (const token of queryTokens) {
+    if (name.includes(token)) score += SEARCH_NAME_WEIGHT;
+    if (description.includes(token)) score += SEARCH_DESCRIPTION_WEIGHT;
+  }
+  return score;
+}
+
+function categoryForTool(toolName: string): string | undefined {
+  for (const [categoryName, category] of Object.entries(TOOL_CATEGORIES)) {
+    if (category.tools.includes(toolName)) return categoryName;
+  }
+  return undefined;
+}
+
 export class AutotaskToolHandler {
   protected autotaskService: AutotaskService;
   protected logger: Logger;
@@ -787,12 +823,7 @@ export class AutotaskToolHandler {
   async listTools(): Promise<McpTool[]> {
     if (this.lazyLoading) {
       // In lazy loading mode, only expose the 3 meta-tools
-      const metaTools = TOOL_DEFINITIONS.filter(t =>
-        t.name === 'autotask_list_categories' ||
-        t.name === 'autotask_list_category_tools' ||
-        t.name === 'autotask_execute_tool' ||
-        t.name === 'autotask_router'
-      );
+      const metaTools = TOOL_DEFINITIONS.filter(t => META_TOOL_NAMES.has(t.name));
       this.logger.debug(`Lazy loading mode: exposing ${metaTools.length} meta-tools (${TOOL_DEFINITIONS.length} total available)`);
       return metaTools;
     }
@@ -1501,13 +1532,51 @@ export class AutotaskToolHandler {
         return { result: categories, message: `Found ${categories.length} tool categories with ${Object.values(TOOL_CATEGORIES).reduce((sum, c) => sum + c.tools.length, 0)} total tools` };
       }],
       ['autotask_list_category_tools', async (a) => {
-        const category = TOOL_CATEGORIES[a.category];
-        if (!category) {
+        const categoryName: string | undefined = a.category;
+        const query: string | undefined = typeof a.query === 'string' && a.query.trim() ? a.query.trim() : undefined;
+
+        if (categoryName !== undefined && !TOOL_CATEGORIES[categoryName]) {
           const available = Object.keys(TOOL_CATEGORIES).join(', ');
-          throw new Error(`Unknown category "${a.category}". Available: ${available}`);
+          throw new Error(`Unknown category "${categoryName}". Available: ${available}`);
         }
-        const tools = TOOL_DEFINITIONS.filter(t => category.tools.includes(t.name));
-        return { result: tools, message: `Found ${tools.length} tools in "${a.category}" category` };
+
+        // Category only (no query): same as before — full tool list for that category.
+        if (categoryName && !query) {
+          const category = TOOL_CATEGORIES[categoryName];
+          const tools = TOOL_DEFINITIONS.filter(t => category.tools.includes(t.name));
+          return { result: tools, message: `Found ${tools.length} tools in "${categoryName}" category` };
+        }
+
+        // Neither category nor query: point the caller at autotask_list_categories.
+        if (!categoryName && !query) {
+          throw new Error('Provide a "category" name or a search "query". Call autotask_list_categories first to see available categories, or pass a query (e.g. { query: "ticket note" }) to search tool names and descriptions across all categories.');
+        }
+
+        // Query present (optionally scoped to a category): keyword search, ranked.
+        const rawLimit = a.limit;
+        const limit = Number.isFinite(rawLimit)
+          ? Math.min(SEARCH_MAX_LIMIT, Math.max(1, Math.trunc(rawLimit)))
+          : SEARCH_DEFAULT_LIMIT;
+
+        const candidates = categoryName
+          ? TOOL_DEFINITIONS.filter(t => TOOL_CATEGORIES[categoryName].tools.includes(t.name))
+          : TOOL_DEFINITIONS.filter(t => !META_TOOL_NAMES.has(t.name));
+
+        const queryTokens = tokenizeQuery(query!);
+        const results = candidates
+          .map(tool => ({ tool, score: scoreToolMatch(tool, queryTokens) }))
+          .filter(x => x.score > 0)
+          .sort((x, y) => y.score - x.score || x.tool.name.localeCompare(y.tool.name))
+          .slice(0, limit)
+          .map(x => ({ ...x.tool, category: categoryName || categoryForTool(x.tool.name) || 'unknown' }));
+
+        const scopeSuffix = categoryName ? ` in "${categoryName}"` : '';
+        return {
+          result: results,
+          message: results.length
+            ? `Found ${results.length} tool(s) matching "${query}"${scopeSuffix}`
+            : `No tools matched "${query}"${scopeSuffix}`
+        };
       }],
       ['autotask_execute_tool', async (a) => {
         const toolName = a.toolName;

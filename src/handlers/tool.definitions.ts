@@ -2748,16 +2748,26 @@ export const TOOL_DEFINITIONS: McpTool[] = [
   },
   {
     name: 'autotask_list_category_tools',
-    description: 'List tools in a specific category with full schemas. Use after autotask_list_categories to see available tools and their parameters.',
+    description: 'Discover tools with full schemas, by category and/or keyword search. Pass "category" alone to list every tool in that category (e.g. after autotask_list_categories). Pass "query" alone to keyword-search tool names and descriptions across all categories, ranked by relevance (name matches outweigh description matches), returning up to "limit" results with the category each tool belongs to. Pass both to search within one category. Recommended flow: autotask_list_categories OR autotask_list_category_tools with a query, then autotask_execute_tool.',
     inputSchema: {
       type: 'object',
       properties: {
         category: {
           type: 'string',
-          description: 'Category name from autotask_list_categories (e.g., "tickets", "financial", "companies")'
+          description: 'Category name from autotask_list_categories (e.g., "tickets", "financial", "companies"). Optional if "query" is given.'
+        },
+        query: {
+          type: 'string',
+          description: 'Keyword search across tool names and descriptions (e.g. "ticket note"). Optional if "category" is given; combine both to search within one category.'
+        },
+        limit: {
+          type: 'number',
+          description: 'Max results for a query search. Default 10, max 25.',
+          minimum: 1,
+          maximum: 25
         }
       },
-      required: ['category']
+      required: []
     }
   },
   {
@@ -3220,24 +3230,24 @@ export const TOOL_DEFINITIONS: McpTool[] = [
 
 export const TOOL_CATEGORIES: Record<string, { description: string; tools: string[] }> = {
   utility: {
-    description: 'Connection testing and field/picklist discovery',
-    tools: ['autotask_test_connection', 'autotask_list_queues', 'autotask_list_ticket_statuses', 'autotask_list_ticket_priorities', 'autotask_get_field_info']
+    description: 'Connection testing, field/picklist discovery, and the raw REST escape hatch (autotask_raw_request) for endpoints not yet wrapped by a typed tool',
+    tools: ['autotask_test_connection', 'autotask_list_queues', 'autotask_list_ticket_statuses', 'autotask_list_ticket_priorities', 'autotask_get_field_info', 'autotask_raw_request']
   },
   companies: {
     description: 'Search, create, and update companies',
     tools: ['autotask_search_companies', 'autotask_create_company', 'autotask_update_company', 'autotask_get_company_site_configuration', 'autotask_update_company_site_configuration']
   },
   contacts: {
-    description: 'Search and create contacts',
-    tools: ['autotask_search_contacts', 'autotask_create_contact']
+    description: 'Search, create, and update contacts',
+    tools: ['autotask_search_contacts', 'autotask_create_contact', 'autotask_update_contact']
   },
   tickets: {
-    description: 'Search, create, update tickets and manage ticket notes, attachments, charges, and audit history',
-    tools: ['autotask_search_tickets', 'autotask_get_ticket_details', 'autotask_create_ticket', 'autotask_update_ticket', 'autotask_get_ticket_note', 'autotask_search_ticket_notes', 'autotask_create_ticket_note', 'autotask_get_ticket_attachment', 'autotask_search_ticket_attachments', 'autotask_create_ticket_attachment', 'autotask_get_ticket_charge', 'autotask_search_ticket_charges', 'autotask_create_ticket_charge', 'autotask_update_ticket_charge', 'autotask_delete_ticket_charge', 'autotask_get_ticket_history', 'autotask_search_ticket_history']
+    description: 'Search, create, update tickets and manage ticket notes, attachments, charges, checklist items, and audit history',
+    tools: ['autotask_search_tickets', 'autotask_get_ticket_details', 'autotask_create_ticket', 'autotask_update_ticket', 'autotask_get_ticket_note', 'autotask_search_ticket_notes', 'autotask_create_ticket_note', 'autotask_get_ticket_attachment', 'autotask_search_ticket_attachments', 'autotask_create_ticket_attachment', 'autotask_get_ticket_charge', 'autotask_search_ticket_charges', 'autotask_create_ticket_charge', 'autotask_update_ticket_charge', 'autotask_delete_ticket_charge', 'autotask_get_ticket_history', 'autotask_search_ticket_history', 'autotask_search_ticket_checklist_items', 'autotask_create_ticket_checklist_item', 'autotask_update_ticket_checklist_item', 'autotask_delete_ticket_checklist_item']
   },
   projects: {
-    description: 'Search and create projects, tasks, phases, and project notes',
-    tools: ['autotask_search_projects', 'autotask_create_project', 'autotask_search_tasks', 'autotask_create_task', 'autotask_list_phases', 'autotask_create_phase', 'autotask_get_project_note', 'autotask_search_project_notes', 'autotask_create_project_note']
+    description: 'Search, create, and update projects, tasks, phases, and project notes',
+    tools: ['autotask_search_projects', 'autotask_create_project', 'autotask_update_project', 'autotask_search_tasks', 'autotask_create_task', 'autotask_list_phases', 'autotask_create_phase', 'autotask_get_project_note', 'autotask_search_project_notes', 'autotask_create_project_note']
   },
   time_and_billing: {
     description: 'Time entries, billing items, and expense management',
@@ -3245,7 +3255,7 @@ export const TOOL_CATEGORIES: Record<string, { description: string; tools: strin
   },
   financial: {
     description: 'Quotes, quote items, opportunities, invoices, and contracts',
-    tools: ['autotask_get_quote', 'autotask_search_quotes', 'autotask_create_quote', 'autotask_get_quote_item', 'autotask_search_quote_items', 'autotask_create_quote_item', 'autotask_update_quote_item', 'autotask_delete_quote_item', 'autotask_get_opportunity', 'autotask_search_opportunities', 'autotask_create_opportunity', 'autotask_search_invoices', 'autotask_search_contracts', 'autotask_get_contract', 'autotask_list_expiring_contracts', 'autotask_search_contract_services', 'autotask_search_contract_service_units', 'autotask_search_contract_service_bundles', 'autotask_search_contract_service_bundle_units', 'autotask_get_contract_recurring_lines', 'autotask_create_contract', 'autotask_create_contracts_bulk', 'autotask_update_contract', 'autotask_create_contract_service', 'autotask_update_contract_service']
+    tools: ['autotask_get_quote', 'autotask_search_quotes', 'autotask_create_quote', 'autotask_get_quote_item', 'autotask_search_quote_items', 'autotask_create_quote_item', 'autotask_update_quote_item', 'autotask_delete_quote_item', 'autotask_get_opportunity', 'autotask_search_opportunities', 'autotask_create_opportunity', 'autotask_search_invoices', 'autotask_get_invoice_details', 'autotask_search_contracts', 'autotask_get_contract', 'autotask_list_expiring_contracts', 'autotask_search_contract_services', 'autotask_search_contract_service_units', 'autotask_search_contract_service_bundles', 'autotask_search_contract_service_bundle_units', 'autotask_get_contract_recurring_lines', 'autotask_create_contract', 'autotask_create_contracts_bulk', 'autotask_update_contract', 'autotask_create_contract_service', 'autotask_update_contract_service']
   },
   products_and_services: {
     description: 'Products, services, and service bundles catalog',
