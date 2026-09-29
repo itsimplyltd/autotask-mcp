@@ -18,7 +18,7 @@ COPY package*.json ./
 # GitHub Packages auth for @wyre-ai scope (autotask-node is consumed via the registry)
 RUN echo "@wyre-ai:registry=https://npm.pkg.github.com" > .npmrc && \
     echo "//npm.pkg.github.com/:_authToken=${GITHUB_TOKEN}" >> .npmrc && \
-    npm ci --ignore-scripts && rm -f .npmrc
+    npm ci --ignore-scripts && npm audit signatures && rm -f .npmrc
 
 # Copy source code
 COPY . .
