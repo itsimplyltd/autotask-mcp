@@ -32,6 +32,7 @@ const TICKET_WRITABLE_FIELDS = [
   'status',
   'priority',
   'assignedResourceID',
+  'assignedResourceRoleID',
   'contactID',
   'queueID',
   'dueDateTime',
