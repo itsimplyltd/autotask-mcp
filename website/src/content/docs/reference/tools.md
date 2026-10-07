@@ -83,6 +83,8 @@ The Autotask MCP Server exposes 39 tools organized by entity type.
 |------|-------------|----------------|
 | `autotask_get_ticket_attachment` | Get a ticket attachment | `ticketId`, `attachmentId` (both required) |
 | `autotask_search_ticket_attachments` | Search attachments on a ticket | `ticketId` (required) |
+| `autotask_get_ticket_note_attachment` | Get an attachment on a ticket note (e.g. a pasted screenshot) | `ticketNoteId`, `attachmentId` (both required) |
+| `autotask_search_ticket_note_attachments` | Search attachments on a ticket note | `ticketNoteId` (required) |
 
 ## Financial
 
@@ -94,6 +96,7 @@ The Autotask MCP Server exposes 39 tools organized by entity type.
 | `autotask_get_quote` | Get a quote | `id` (required) |
 | `autotask_search_quotes` | Search quotes | `companyID` |
 | `autotask_create_quote` | Create a quote | `name`, `companyID` (required) |
+| `autotask_update_opportunity` | Update an opportunity | `opportunityId` (required), plus any field in the tool schema (stage, status, per-period revenue/cost, UDFs, …) |
 | `autotask_search_contracts` | Search contracts | `companyID` |
 | `autotask_search_invoices` | Search invoices | `companyID` |
 

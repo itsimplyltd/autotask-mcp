@@ -30,6 +30,7 @@ import {
   AutotaskProjectNote,
   AutotaskCompanyNote,
   AutotaskTicketAttachment,
+  AutotaskTicketNoteAttachment,
   AutotaskTicketChecklistItem,
   AutotaskTicketAttachmentCreateRequest,
   AutotaskExpenseReport,
@@ -50,7 +51,10 @@ import {
   AutotaskServiceCall,
   AutotaskServiceCallTicket,
   AutotaskServiceCallTicketResource,
-  AutotaskPhase
+  AutotaskPhase,
+  AutotaskResourceRole,
+  AutotaskRole,
+  AutotaskResourceRoleSummary
 } from '../types/autotask';
 import { McpServerConfig } from '../types/mcp';
 import { Logger } from '../utils/logger';
@@ -770,7 +774,7 @@ export class AutotaskService {
 
   /**
    * Return the list of internal (non-customer-facing) billing code names.
-   * Queries BillingCodes with useType = 1 (Internal Allocation Code).
+   * Queries BillingCodes with useType = 3 (Regular (Internal) Time).
    */
   async getInternalBillingCodeNames(): Promise<string[]> {
     const http = await this.ensureClient();
@@ -778,7 +782,7 @@ export class AutotaskService {
       const codes = await http.query<{ name: string }>(
         'BillingCodes',
         [
-          { op: 'eq', field: 'useType', value: 1 },
+          { op: 'eq', field: 'useType', value: 3 },
           { op: 'eq', field: 'isActive', value: true }
         ],
         { maxRecords: 500 }
@@ -789,14 +793,18 @@ export class AutotaskService {
       throw error;
     }
   }
-
+  
+  /**
+   * Resolves an internal billing code by name.
+   * Queries BillingCodes with useType = 3 (Regular (Internal) Time)
+   */
   async resolveInternalBillingCodeByName(name: string): Promise<{ id: number; name: string } | null> {
     const http = await this.ensureClient();
     try {
       const results = await http.query<{ id: number; name: string }>(
         'BillingCodes',
         [
-          { op: 'eq', field: 'useType', value: 1 },
+          { op: 'eq', field: 'useType', value: 3 },
           { op: 'eq', field: 'isActive', value: true },
           { op: 'eq', field: 'name', value: name }
         ],
@@ -902,6 +910,96 @@ export class AutotaskService {
       this.logger.error(`Failed to get resource ${id}:`, error);
       throw error;
     }
+  }
+
+  /**
+   * The billing roles a resource holds (Autotask ResourceRoles joined to
+   * Roles for the names). Active assignments only unless asked otherwise.
+   *
+   * Two queries, both filtered: never an enumeration of every role in the
+   * tenant.
+   */
+  async searchResourceRoles(resourceId: number, includeInactive = false): Promise<AutotaskResourceRoleSummary[]> {
+    const http = await this.ensureClient();
+    try {
+      this.logger.debug(`Searching roles for resource ${resourceId}`);
+      const filters: QueryFilter[] = [{ op: 'eq', field: 'resourceID', value: resourceId }];
+      if (!includeInactive) {
+        filters.push({ op: 'eq', field: 'isActive', value: true });
+      }
+      const assignments = await http.query<AutotaskResourceRole>('ResourceRoles', filters, { maxRecords: 100 });
+      if (assignments.length === 0) {
+        return [];
+      }
+      const roleIds = [...new Set(assignments.map(a => a.roleID))];
+      const roles = await http.query<AutotaskRole>(
+        'Roles',
+        [{ op: 'in', field: 'id', value: roleIds }],
+        { maxRecords: Math.max(roleIds.length, 1) }
+      );
+      const byId = new Map(roles.map(r => [r.id, r]));
+      // One row per ROLE, not per assignment: Autotask holds a ResourceRoles
+      // row per (resource, role, department/queue), so a person with one role
+      // across five queues comes back five times — and would otherwise look
+      // like five roles to choose between. The first assignment's department
+      // and rate are kept as representative.
+      const summaries: AutotaskResourceRoleSummary[] = [];
+      const seen = new Set<number>();
+      for (const a of assignments) {
+        if (seen.has(a.roleID)) {
+          continue;
+        }
+        seen.add(a.roleID);
+        summaries.push({
+          roleID: a.roleID,
+          roleName: byId.get(a.roleID)?.name ?? `Role ${a.roleID}`,
+          resourceID: a.resourceID,
+          isActive: a.isActive !== false,
+          departmentID: a.departmentID,
+          hourlyRate: a.hourlyRate,
+        });
+      }
+      this.logger.info(`Retrieved ${summaries.length} roles for resource ${resourceId}`);
+      return summaries;
+    } catch (error) {
+      this.logger.error(`Failed to search roles for resource ${resourceId}:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * The one roleID to use for a resource: their only active role, or the
+   * active role whose name matches `roleName`. Anything ambiguous is refused
+   * with the resource's roles spelled out (name and id), so the caller can
+   * choose by name next time instead of guessing an id — Autotask answers a
+   * wrong id with "Role does not exist or is invalid", which says nothing
+   * about what would have been right.
+   */
+  async resolveRoleForResource(resourceId: number, roleName?: string): Promise<number> {
+    const roles = await this.searchResourceRoles(resourceId);
+    const list = roles.map(r => `${r.roleName} (roleID ${r.roleID})`).join(', ');
+
+    if (roles.length === 0) {
+      throw new Error(`Resource ${resourceId} has no active roles in Autotask, so no roleID can be chosen for them. An Autotask administrator must assign the resource a role first.`);
+    }
+
+    const wanted = roleName?.trim().toLowerCase();
+    if (wanted) {
+      const exact = roles.filter(r => r.roleName.toLowerCase() === wanted);
+      const matches = exact.length > 0 ? exact : roles.filter(r => r.roleName.toLowerCase().includes(wanted));
+      if (matches.length === 1) {
+        return matches[0].roleID;
+      }
+      throw new Error(matches.length === 0
+        ? `Resource ${resourceId} has no active role matching "${roleName}". Their roles: ${list}.`
+        : `"${roleName}" matches more than one of resource ${resourceId}'s roles: ${matches.map(r => `${r.roleName} (roleID ${r.roleID})`).join(', ')}. Give the full role name.`);
+    }
+
+    if (roles.length === 1) {
+      return roles[0].roleID;
+    }
+
+    throw new Error(`Resource ${resourceId} holds ${roles.length} active roles and Autotask needs exactly one: ${list}. Pass roleName (or roleID) to choose.`);
   }
 
   async searchResources(options: AutotaskQueryOptions = {}): Promise<AutotaskResource[]> {
@@ -1916,6 +2014,143 @@ export class AutotaskService {
     }
   }
 
+  // =====================================================
+  // Ticket Note Attachments (child of TicketNotes)
+  //
+  // Attachments/pasted images on a NOTE, not the ticket itself — closes the
+  // gap where a note's `description` is empty but the note actually carries
+  // one or more files/screenshots in the Autotask UI (autotask-mcp#297).
+  // Same top-level-populates-data / child-omits-data split as
+  // getTicketAttachment above: verified live against
+  // /TicketNoteAttachments/entityInformation/fields (field names differ from
+  // AutotaskTicketAttachment — title/fullPath/attachDate here, not
+  // fileName/createDate), but no live note with an actual attachment was
+  // available to empirically confirm the child endpoint omits `data` the
+  // same way it does for ticket attachments — the split is applied on the
+  // strength of Autotask's consistent attachment-entity design, not a
+  // second empirical reproduction.
+  // =====================================================
+
+  /**
+   * Get an attachment on a ticket note. With `includeData` false (default),
+   * hits the cheap `TicketNotes/{id}/Attachments/{id}` child endpoint and
+   * returns metadata only — it never populates `data` regardless of query
+   * parameters. With `includeData` true, hits the top-level
+   * `TicketNoteAttachments/{id}` entity (the only endpoint that populates
+   * `data`) and enforces that the attachment actually belongs to
+   * `ticketNoteId` — `ticketNoteID` is an optional field on this entity
+   * (Autotask's own field metadata marks it `isRequired: false`, since a
+   * TicketNoteAttachment-shaped row can in principle belong to a different
+   * parent), so scope is verified with strict equality against the
+   * requested id, never merely "present and different" — an omitted or
+   * non-numeric `ticketNoteID` is rejected, not passed through. Base64
+   * payloads longer than `maxInlineBase64Bytes` (default 750,000, ~560 KB
+   * raw) are stripped from the response and replaced with a
+   * `dataOmittedReason` explaining why, since an oversized inline payload
+   * can exceed a typical MCP client's tool-result size limit. Returns
+   * `null` when the attachment does not exist or does not belong to the
+   * given note.
+   */
+  async getTicketNoteAttachment(
+    ticketNoteId: number,
+    attachmentId: number,
+    options: { includeData?: boolean; maxInlineBase64Bytes?: number } = {}
+  ): Promise<(AutotaskTicketNoteAttachment & { dataOmittedReason?: string }) | null> {
+    const includeData = options.includeData ?? false;
+    const maxInlineBase64Bytes =
+      options.maxInlineBase64Bytes ?? AutotaskService.DEFAULT_MAX_INLINE_ATTACHMENT_BASE64;
+
+    const http = await this.ensureClient();
+    try {
+      this.logger.debug(
+        `Getting ticket note attachment - TicketNoteID: ${ticketNoteId}, AttachmentID: ${attachmentId}, includeData: ${includeData}`
+      );
+
+      if (!includeData) {
+        // The child endpoint never populates the `data` field — using it for
+        // the metadata-only path sidesteps the binary download entirely.
+        return await http.childGet<AutotaskTicketNoteAttachment>(
+          'TicketNotes',
+          ticketNoteId,
+          'Attachments',
+          attachmentId
+        );
+      }
+
+      // Only the top-level entity endpoint populates `data`; the child endpoint
+      // omits it regardless of any query parameters.
+      const attachment = await http.get<AutotaskTicketNoteAttachment>('TicketNoteAttachments', attachmentId);
+      if (!attachment) return null;
+
+      // The top-level endpoint accepts any attachment ID, so we have to enforce
+      // parent scope ourselves to honor the (ticketNoteId, attachmentId) contract.
+      // Fail CLOSED: ticketNoteID is documented as optional on this entity
+      // (Autotask field metadata: isRequired: false), so a row that omits it
+      // must be rejected too, not passed through because it isn't a
+      // *mismatched* number. Strict equality catches missing, non-numeric,
+      // AND mismatched values in one check — the earlier `typeof === 'number'
+      // && !==` form let an attachment with no ticketNoteID through
+      // unverified (CodeRabbit PR #300 review).
+      if (attachment.ticketNoteID !== ticketNoteId) {
+        this.logger.warn(
+          `Ticket note attachment ${attachmentId} does not belong to note ${ticketNoteId} (ticketNoteID: ${attachment.ticketNoteID ?? 'missing'}). Returning null.`
+        );
+        return null;
+      }
+
+      // Oversized binaries arrive truncated/garbled at the MCP client. Strip
+      // and surface a reason so the caller knows to fetch out-of-band rather
+      // than wondering why the response is broken.
+      if (typeof attachment.data === 'string' && attachment.data.length > maxInlineBase64Bytes) {
+        const decodedBytes = Buffer.byteLength(attachment.data, 'base64');
+        const reason =
+          `Attachment data omitted: base64 length ${attachment.data.length} bytes ` +
+          `(${decodedBytes} bytes decoded) exceeds inline limit of ${maxInlineBase64Bytes} bytes. ` +
+          `Fetch directly from Autotask, or call again with a larger maxInlineBase64Bytes (caveat: ` +
+          `the MCP client may reject the oversized response).`;
+        this.logger.warn(
+          `getTicketNoteAttachment: stripping oversized data for attachment ${attachmentId} (${attachment.data.length} base64 bytes)`
+        );
+        const { data: _omitted, ...rest } = attachment;
+        return { ...rest, dataOmittedReason: reason };
+      }
+
+      return attachment;
+    } catch (error) {
+      this.logger.error(`Failed to get ticket note attachment ${attachmentId} for note ${ticketNoteId}:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * List attachment metadata for a ticket note (child of TicketNotes). Never
+   * returns `data` — use getTicketNoteAttachment with includeData:true for
+   * that. `options.pageSize` caps the result count (default 10, max
+   * enforced by AUTOTASK_MAX_PAGE_SIZE via childQuery). Each call scopes to
+   * one note; the caller must iterate per note, not per ticket.
+   */
+  async searchTicketNoteAttachments(
+    ticketNoteId: number,
+    options: AutotaskQueryOptionsExtended = {}
+  ): Promise<AutotaskTicketNoteAttachment[]> {
+    const http = await this.ensureClient();
+    try {
+      this.logger.debug(`Searching ticket note attachments for note ${ticketNoteId}:`, options);
+      const attachments = await http.childQuery<AutotaskTicketNoteAttachment>(
+        'TicketNotes',
+        ticketNoteId,
+        'Attachments',
+        MATCH_ALL,
+        { maxRecords: options.pageSize || 10 }
+      );
+      this.logger.info(`Retrieved ${attachments.length} ticket note attachments`);
+      return attachments;
+    } catch (error) {
+      this.logger.error(`Failed to search ticket note attachments for note ${ticketNoteId}:`, error);
+      throw error;
+    }
+  }
+
   async createTicketAttachment(
     ticketId: number,
     data: AutotaskTicketAttachmentCreateRequest
@@ -2098,7 +2333,9 @@ export class AutotaskService {
     try {
       this.logger.debug('Searching quotes with options:', options);
       const filters: QueryFilter[] = [];
-      if (options.companyId) {
+      // WYREAI-373: !== undefined, not truthy — WYRE Technology's own
+      // company id is 0, and a bare truthy check silently drops the filter.
+      if (options.companyId !== undefined) {
         // The Quotes entity has NO account* field — its company link is
         // `companyID` (confirmed via entityInformation/fields). Filtering on
         // `accountId` returns HTTP 500 "Unable to find accountId in the
@@ -2183,7 +2420,8 @@ export class AutotaskService {
     try {
       this.logger.debug('Searching opportunities with options:', options);
       const filters: QueryFilter[] = [];
-      if (options.companyId) {
+      // WYREAI-373: !== undefined, not truthy — see searchQuotes above.
+      if (options.companyId !== undefined) {
         filters.push({ field: 'companyID', op: 'eq', value: options.companyId });
       }
       if (options.searchTerm) {
@@ -2232,6 +2470,31 @@ export class AutotaskService {
       return id;
     } catch (error) {
       this.logger.error('Failed to create opportunity:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Partially update opportunity `id`: only the fields in `updates` are sent,
+   * and everything else on the record is left as it is.
+   *
+   * The Zone DE1 PUT fallback is disabled here. PUT nulls every field it is not
+   * given, so falling back would clear the rest of the opportunity; on a zone
+   * without collection-level PATCH this fails with the 404 instead.
+   *
+   * @param id Opportunity to update. Always authoritative: an `id` inside
+   *   `updates` cannot redirect the call to another record.
+   * @param updates Opportunity fields to change, in Autotask's field casing.
+   */
+  async updateOpportunity(id: number, updates: Partial<AutotaskOpportunity>): Promise<void> {
+    const http = await this.ensureClient();
+    try {
+      // Field names only: description and UDF values can carry customer data.
+      this.logger.debug(`Updating opportunity ${id}: fields=${Object.keys(updates).join(', ')}`);
+      await http.update('Opportunities', id, updates as Record<string, any>, { putFallback: false });
+      this.logger.info(`Opportunity ${id} updated successfully`);
+    } catch (error) {
+      this.logger.error(`Failed to update opportunity ${id}:`, error);
       throw error;
     }
   }

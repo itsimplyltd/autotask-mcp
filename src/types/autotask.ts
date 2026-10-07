@@ -383,6 +383,31 @@ export interface AutotaskTicketAttachmentCreateRequest {
   publish?: number; // 1 = All Autotask Users, 2 = Internal Users Only
 }
 
+/**
+ * Attachment on a ticket note (child of TicketNotes; the top-level
+ * TicketNoteAttachments/TicketNoteAttachment entity is the one that
+ * populates `data`). Field names verified against the live Autotask REST
+ * API's /TicketNoteAttachments/entityInformation/fields — this entity does
+ * NOT share field names with AutotaskTicketAttachment above (title/fullPath/
+ * attachDate here, not fileName/createDate).
+ */
+export interface AutotaskTicketNoteAttachment {
+  id?: number;
+  ticketID?: number;
+  ticketNoteID?: number;
+  title?: string;
+  fullPath?: string;
+  fileSize?: number;
+  contentType?: string;
+  data?: string; // Base64 encoded file data
+  attachDate?: string;
+  attachedByResourceID?: number;
+  attachedByContactID?: number;
+  attachmentType?: string;
+  publish?: number;
+  [key: string]: any;
+}
+
 export interface AutotaskExpenseReport {
   id?: number;
   name?: string;
@@ -700,3 +725,38 @@ export enum CompanyType {
   Vendor = 5,
   Partner = 6
 } 
+/**
+ * One row of Autotask's ResourceRoles entity: a resource's assignment to a
+ * billing role. Every ticket/task time entry must carry a roleID that is one
+ * of the entry's resource's ACTIVE assignments, and a ticket assigned to a
+ * resource must name one of that resource's roles too.
+ */
+export interface AutotaskResourceRole {
+  id: number;
+  resourceID: number;
+  roleID: number;
+  departmentID?: number;
+  queueID?: number;
+  hourlyRate?: number;
+  isActive?: boolean;
+}
+
+/** Autotask's Roles entity: the billing role a ResourceRoles row points at. */
+export interface AutotaskRole {
+  id: number;
+  name: string;
+  description?: string;
+  isActive?: boolean;
+  isSystemRole?: boolean;
+  hourlyRate?: number;
+}
+
+/** What autotask_search_resource_roles returns: an assignment joined to its role's name. */
+export interface AutotaskResourceRoleSummary {
+  roleID: number;
+  roleName: string;
+  resourceID: number;
+  isActive: boolean;
+  departmentID?: number | undefined;
+  hourlyRate?: number | undefined;
+}

@@ -297,12 +297,12 @@ export const TOOL_DEFINITIONS: McpTool[] = [
     inputSchema: {
       type: 'object',
       properties: {
-        companyId: {
+        companyID: {
           type: 'number',
           description: 'The company ID whose site configuration records should be returned'
         }
       },
-      required: ['companyId']
+      required: ['companyID']
     }
   },
   {
@@ -608,11 +608,15 @@ export const TOOL_DEFINITIONS: McpTool[] = [
         },
         assignedResourceID: {
           type: 'number',
-          description: 'Assigned resource ID. If set, assignedResourceRoleID is also required by Autotask.'
+          description: 'Assigned resource ID. Autotask also requires that resource\'s role: pass assignedResourceRoleID or assignedResourceRoleName, or omit both and the resource\'s only active role is used (several roles = an error naming them).'
         },
         assignedResourceRoleID: {
           type: 'number',
-          description: 'Role ID for the assigned resource. Required by Autotask when assignedResourceID is set.'
+          description: 'Role ID for the assigned resource — one of that resource\'s roles (see autotask_search_resource_roles). Resolved automatically when omitted.'
+        },
+        assignedResourceRoleName: {
+          type: 'string',
+          description: 'Name of the assigned resource\'s role, e.g. "Help Desk", used instead of assignedResourceRoleID when the resource holds several roles.'
         },
         contactID: {
           type: 'number',
@@ -715,11 +719,15 @@ export const TOOL_DEFINITIONS: McpTool[] = [
         },
         assignedResourceID: {
           type: 'number',
-          description: 'Assigned resource ID. If set, assignedResourceRoleID is also required by Autotask.'
+          description: 'Assigned resource ID. Autotask also requires that resource\'s role: pass assignedResourceRoleID or assignedResourceRoleName, or omit both and the resource\'s only active role is used (several roles = an error naming them).'
         },
         assignedResourceRoleID: {
           type: 'number',
-          description: 'Role ID for the assigned resource. Required by Autotask when assignedResourceID is set.'
+          description: 'Role ID for the assigned resource — one of that resource\'s roles (see autotask_search_resource_roles). Resolved automatically when omitted.'
+        },
+        assignedResourceRoleName: {
+          type: 'string',
+          description: 'Name of the assigned resource\'s role, e.g. "Help Desk", used instead of assignedResourceRoleID when the resource holds several roles.'
         },
         dueDateTime: {
           type: 'string',
@@ -966,6 +974,29 @@ export const TOOL_DEFINITIONS: McpTool[] = [
     }
   },
 
+  {
+    name: 'autotask_search_resource_roles',
+    description: 'List the billing roles a resource (user) holds in Autotask, with names and role IDs. A ticket assigned to a resource and every ticket/task time entry need one of these role IDs; this is where to find them instead of guessing. Give resourceId or resourceName. Active roles only unless includeInactive is true.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        resourceId: {
+          type: 'number',
+          description: 'Resource (user) ID'
+        },
+        resourceName: {
+          type: 'string',
+          description: 'Resource name, e.g. "Ryan Rampersaud", resolved to a resourceId when resourceId is not given'
+        },
+        includeInactive: {
+          type: 'boolean',
+          description: 'Also list inactive role assignments (default false)'
+        }
+      }
+    },
+    annotations: { readOnlyHint: true }
+  },
+
   // Time entry tools
   {
     name: 'autotask_create_time_entry',
@@ -991,7 +1022,11 @@ export const TOOL_DEFINITIONS: McpTool[] = [
         },
         roleID: {
           type: 'number',
-          description: 'Role ID associated with the time entry. Optional as this will default to ticketID.assignedResourceroleID or taskID.assignedResourceroleID for Ticket and Task time entries respectively and will be ignored for Regular Time entries. If the system setting "Allow users to modify Role when creating/editing time entries on tickets" is enabled this may be set to a different Role ID.'
+          description: 'Role ID for a ticket/task time entry — must be one of the logging resource\'s active roles (see autotask_search_resource_roles). Optional: when omitted, the parent ticket/task\'s assigned role is used if the parent is assigned to this same resource, else the resource\'s only active role; a resource with several roles must be told which one (roleName or roleID). Ignored for Regular Time.'
+        },
+        roleName: {
+          type: 'string',
+          description: 'Name of the logging resource\'s role, e.g. "Help Desk", used instead of roleID. Case-insensitive; must match exactly one of the resource\'s active roles.'
         },
         category: {
           type: 'string',
@@ -1015,7 +1050,7 @@ export const TOOL_DEFINITIONS: McpTool[] = [
         },
         summaryNotes: {
           type: 'string',
-          description: 'Summary notes for the time entry'
+          description: 'Summary notes for the time entry. The field must be present but may be an empty string ("") to create an entry with internal notes only via the "internalNotes" field.'
         },
         internalNotes: {
           type: 'string',
@@ -1512,7 +1547,7 @@ export const TOOL_DEFINITIONS: McpTool[] = [
     inputSchema: {
       type: 'object',
       properties: {
-        companyId: {
+        companyID: {
           type: 'number',
           description: 'The company ID'
         },
@@ -1521,7 +1556,7 @@ export const TOOL_DEFINITIONS: McpTool[] = [
           description: 'The note ID to retrieve'
         }
       },
-      required: ['companyId', 'noteId']
+      required: ['companyID', 'noteId']
     }
   },
   {
@@ -1536,7 +1571,7 @@ export const TOOL_DEFINITIONS: McpTool[] = [
     inputSchema: {
       type: 'object',
       properties: {
-        companyId: {
+        companyID: {
           type: 'number',
           description: 'The company ID to search notes for'
         },
@@ -1547,7 +1582,7 @@ export const TOOL_DEFINITIONS: McpTool[] = [
           maximum: 100
         }
       },
-      required: ['companyId']
+      required: ['companyID']
     }
   },
   {
@@ -1556,7 +1591,7 @@ export const TOOL_DEFINITIONS: McpTool[] = [
     inputSchema: {
       type: 'object',
       properties: {
-        companyId: {
+        companyID: {
           type: 'number',
           description: 'The company ID to add the note to'
         },
@@ -1573,7 +1608,7 @@ export const TOOL_DEFINITIONS: McpTool[] = [
           description: 'Action type for the note'
         }
       },
-      required: ['companyId', 'description']
+      required: ['companyID', 'description']
     }
   },
 
@@ -1636,6 +1671,68 @@ export const TOOL_DEFINITIONS: McpTool[] = [
         }
       },
       required: ['ticketId']
+    }
+  },
+
+  // Ticket Note Attachments tools
+  {
+    name: 'autotask_get_ticket_note_attachment',
+    description: 'Get an attachment on a ticket NOTE (e.g. a pasted screenshot or file inside an internal note — distinct from attachments on the ticket itself). With includeData=false (default) returns metadata only — fast, suitable for browsing. With includeData=true returns the base64 binary content via the top-level /TicketNoteAttachments/{id} endpoint (the child endpoint never populates data). The attachment is verified to belong to the given ticketNoteId. Oversized binaries are stripped from the response with a dataOmittedReason field — Autotask attachments can be up to 3 MB, which is ~4 MB as base64 and may exceed the MCP client tool-result limit (~1 MB).',
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ticketNoteId: {
+          type: 'number',
+          description: 'The ticket note ID the attachment belongs to (from autotask_search_ticket_notes)'
+        },
+        attachmentId: {
+          type: 'number',
+          description: 'The attachment ID to retrieve'
+        },
+        includeData: {
+          type: 'boolean',
+          description: 'Set true to fetch the base64-encoded file bytes. Default false returns metadata only.',
+          default: false
+        },
+        maxInlineBase64Bytes: {
+          type: 'number',
+          description: 'Cap on base64 string length before data is stripped (default 750_000, ~560 KB raw). Only relevant when includeData=true. Raise carefully — your MCP client may reject oversized tool results.',
+          minimum: 1024
+        }
+      },
+      required: ['ticketNoteId', 'attachmentId']
+    }
+  },
+  {
+    name: 'autotask_search_ticket_note_attachments',
+    description: 'Search for attachments on a specific ticket note — use this when autotask_search_ticket_notes returns a note with an empty or unhelpful `description`, since the real content is often a pasted image or file living on the note rather than in its text. Each note triggers a separate query — scope the parent note list before iterating.',
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ticketNoteId: {
+          type: 'number',
+          description: 'The ticket note ID to search attachments for (from autotask_search_ticket_notes)'
+        },
+        pageSize: {
+          type: 'number',
+          description: 'Number of results to return (default: 10, max: 50)',
+          minimum: 1,
+          maximum: 50
+        }
+      },
+      required: ['ticketNoteId']
     }
   },
   {
@@ -1766,7 +1863,7 @@ export const TOOL_DEFINITIONS: McpTool[] = [
         expenseDate: { type: 'string', description: 'Date of expense (YYYY-MM-DD format)' },
         expenseCategory: { type: 'number', description: 'Expense category picklist ID' },
         amount: { type: 'number', description: 'Expense amount' },
-        companyId: { type: 'number', description: 'Associated company ID (0 for internal)' },
+        companyID: { type: 'number', description: 'Associated company ID (0 for internal)' },
         haveReceipt: { type: 'boolean', description: 'Whether a receipt is attached' },
         isBillableToCompany: { type: 'boolean', description: 'Whether billable to company' },
         isReimbursable: { type: 'boolean', description: 'Whether this expense is reimbursable' },
@@ -1809,7 +1906,7 @@ export const TOOL_DEFINITIONS: McpTool[] = [
     inputSchema: {
       type: 'object',
       properties: {
-        companyId: {
+        companyID: {
           type: 'number',
           description: 'Filter by company ID'
         },
@@ -1849,7 +1946,7 @@ export const TOOL_DEFINITIONS: McpTool[] = [
           type: 'string',
           description: 'Quote description'
         },
-        companyId: {
+        companyID: {
           type: 'number',
           description: 'Company ID for the quote'
         },
@@ -1870,7 +1967,7 @@ export const TOOL_DEFINITIONS: McpTool[] = [
           description: 'Expiration date (YYYY-MM-DD format)'
         }
       },
-      required: ['companyId']
+      required: ['companyID']
     }
   },
 
@@ -1907,7 +2004,7 @@ export const TOOL_DEFINITIONS: McpTool[] = [
     inputSchema: {
       type: 'object',
       properties: {
-        companyId: {
+        companyID: {
           type: 'number',
           description: 'Filter by company ID'
         },
@@ -1940,7 +2037,7 @@ export const TOOL_DEFINITIONS: McpTool[] = [
           type: 'string',
           description: 'Opportunity name/title'
         },
-        companyId: {
+        companyID: {
           type: 'number',
           description: 'Company ID for the opportunity'
         },
@@ -1997,7 +2094,115 @@ export const TOOL_DEFINITIONS: McpTool[] = [
           description: 'Opportunity category picklist value ID'
         }
       },
-      required: ['title', 'companyId', 'ownerResourceId', 'status', 'stage', 'projectedCloseDate', 'startDate']
+      required: ['title', 'companyID', 'ownerResourceId', 'status', 'stage', 'projectedCloseDate', 'startDate']
+    }
+  },
+  {
+    name: 'autotask_update_opportunity',
+    description: 'Update an existing opportunity in Autotask. Only the fields you provide will be updated. Autotask derives amount (total revenue) and cost from the per-period fields (onetimeRevenue, monthlyRevenue, onetimeCost, monthlyCost, etc.), so change revenue and cost through those. Setting amount or cost directly replaces the whole breakdown: the total becomes one-time and any recurring revenue or cost is cleared. Setting useQuoteTotals=true replaces revenue and cost with the primary quote\'s totals.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        opportunityId: {
+          type: 'number',
+          description: 'The ID of the opportunity to update'
+        },
+        title: {
+          type: 'string',
+          description: 'Opportunity name/title'
+        },
+        description: {
+          type: 'string',
+          description: 'Opportunity description'
+        },
+        status: {
+          type: 'number',
+          description: 'Status: 0=Not Ready To Buy, 1=Active, 2=Lost, 3=Closed, 4=Implemented'
+        },
+        stage: {
+          type: 'number',
+          description: 'Stage picklist value ID (use autotask_get_field_info to find valid values)'
+        },
+        probability: {
+          type: 'number',
+          description: 'Win probability percentage (0-100)'
+        },
+        projectedCloseDate: {
+          type: 'string',
+          description: 'Projected close date (YYYY-MM-DD). Must not be before the start date.'
+        },
+        ownerResourceID: {
+          type: 'number',
+          description: 'Owner resource ID (the sales rep or account manager)'
+        },
+        contactID: {
+          type: 'number',
+          description: 'Contact ID. Must be an active contact at the opportunity\'s company.'
+        },
+        opportunityCategoryID: {
+          type: 'number',
+          description: 'Opportunity category picklist value ID'
+        },
+        nextStep: {
+          type: 'string',
+          description: 'Next step (max 500 characters)'
+        },
+        winReason: {
+          type: 'number',
+          description: 'Win reason picklist value ID, for a won opportunity (use autotask_get_field_info to find valid values)'
+        },
+        winReasonDetail: {
+          type: 'string',
+          description: 'Win reason detail (max 500 characters)'
+        },
+        lossReason: {
+          type: 'number',
+          description: 'Loss reason picklist value ID, for a lost opportunity (use autotask_get_field_info to find valid values)'
+        },
+        lossReasonDetail: {
+          type: 'string',
+          description: 'Loss reason detail (max 500 characters)'
+        },
+        useQuoteTotals: {
+          type: 'boolean',
+          description: 'Take revenue and cost from the primary quote. Setting true overwrites every revenue and cost field; with no quote attached, they all become 0.'
+        },
+        amount: {
+          type: 'number',
+          description: 'Total revenue. Setting this replaces the revenue breakdown: onetimeRevenue becomes this value and recurring revenue is cleared. To keep recurring revenue, set the per-period fields instead.'
+        },
+        cost: {
+          type: 'number',
+          description: 'Total cost. Setting this replaces the cost breakdown: onetimeCost becomes this value and recurring cost is cleared. To keep recurring cost, set the per-period fields instead.'
+        },
+        onetimeRevenue: { type: 'number', description: 'One-time revenue' },
+        onetimeCost: { type: 'number', description: 'One-time cost' },
+        monthlyRevenue: { type: 'number', description: 'Monthly revenue' },
+        monthlyCost: { type: 'number', description: 'Monthly cost' },
+        quarterlyRevenue: { type: 'number', description: 'Quarterly revenue' },
+        quarterlyCost: { type: 'number', description: 'Quarterly cost' },
+        semiannualRevenue: { type: 'number', description: 'Semi-annual revenue' },
+        semiannualCost: { type: 'number', description: 'Semi-annual cost' },
+        yearlyRevenue: { type: 'number', description: 'Yearly revenue' },
+        yearlyCost: { type: 'number', description: 'Yearly cost' },
+        totalAmountMonths: {
+          type: 'number',
+          description: 'Number of months the recurring revenue/cost is totalled over (e.g., 12 for annual)'
+        },
+        userDefinedFields: {
+          type: 'array',
+          description: 'User-defined field values to set on the opportunity (Autotask REST-native shape)',
+          items: {
+            type: 'object',
+            properties: {
+              name: { type: 'string', description: 'UDF name' },
+              value: { type: 'string', description: 'UDF value' }
+            },
+            required: ['name', 'value']
+          }
+        }
+      },
+      required: ['opportunityId']
     }
   },
 
@@ -2889,7 +3094,7 @@ export const TOOL_DEFINITIONS: McpTool[] = [
     inputSchema: {
       type: 'object',
       properties: {
-        companyId: {
+        companyID: {
           type: 'number',
           description: 'Filter by company ID'
         },
@@ -3190,7 +3395,7 @@ export const TOOL_DEFINITIONS: McpTool[] = [
     inputSchema: {
       type: 'object',
       properties: {
-        companyId: {
+        companyID: {
           type: 'number',
           description: 'Filter by company ID'
         },
@@ -3621,7 +3826,7 @@ export const TOOL_CATEGORIES: Record<string, { description: string; tools: strin
   },
   tickets: {
     description: 'Search, create, update tickets and manage ticket notes, attachments, charges, checklist items, and audit history',
-    tools: ['autotask_search_tickets', 'autotask_get_ticket_details', 'autotask_create_ticket', 'autotask_update_ticket', 'autotask_get_ticket_note', 'autotask_search_ticket_notes', 'autotask_create_ticket_note', 'autotask_get_ticket_attachment', 'autotask_search_ticket_attachments', 'autotask_create_ticket_attachment', 'autotask_get_ticket_charge', 'autotask_search_ticket_charges', 'autotask_create_ticket_charge', 'autotask_update_ticket_charge', 'autotask_delete_ticket_charge', 'autotask_get_ticket_history', 'autotask_search_ticket_history', 'autotask_search_ticket_checklist_items', 'autotask_create_ticket_checklist_item', 'autotask_update_ticket_checklist_item', 'autotask_delete_ticket_checklist_item']
+    tools: ['autotask_search_tickets', 'autotask_get_ticket_details', 'autotask_create_ticket', 'autotask_update_ticket', 'autotask_get_ticket_note', 'autotask_search_ticket_notes', 'autotask_create_ticket_note', 'autotask_get_ticket_attachment', 'autotask_search_ticket_attachments', 'autotask_create_ticket_attachment', 'autotask_get_ticket_note_attachment', 'autotask_search_ticket_note_attachments', 'autotask_get_ticket_charge', 'autotask_search_ticket_charges', 'autotask_create_ticket_charge', 'autotask_update_ticket_charge', 'autotask_delete_ticket_charge', 'autotask_get_ticket_history', 'autotask_search_ticket_history', 'autotask_search_ticket_checklist_items', 'autotask_create_ticket_checklist_item', 'autotask_update_ticket_checklist_item', 'autotask_delete_ticket_checklist_item']
   },
   projects: {
     description: 'Search, create, and update projects, tasks, phases, and project notes',
@@ -3633,7 +3838,7 @@ export const TOOL_CATEGORIES: Record<string, { description: string; tools: strin
   },
   financial: {
     description: 'Quotes, quote items, opportunities, invoices, and contracts',
-    tools: ['autotask_get_quote', 'autotask_search_quotes', 'autotask_create_quote', 'autotask_get_quote_item', 'autotask_search_quote_items', 'autotask_create_quote_item', 'autotask_update_quote_item', 'autotask_delete_quote_item', 'autotask_get_opportunity', 'autotask_search_opportunities', 'autotask_create_opportunity', 'autotask_search_invoices', 'autotask_get_invoice_details', 'autotask_search_contracts', 'autotask_get_contract', 'autotask_list_expiring_contracts', 'autotask_search_contract_services', 'autotask_search_contract_service_units', 'autotask_search_contract_service_bundles', 'autotask_search_contract_service_bundle_units', 'autotask_get_contract_recurring_lines', 'autotask_create_contract', 'autotask_create_contracts_bulk', 'autotask_update_contract', 'autotask_create_contract_service', 'autotask_update_contract_service']
+    tools: ['autotask_get_quote', 'autotask_search_quotes', 'autotask_create_quote', 'autotask_get_quote_item', 'autotask_search_quote_items', 'autotask_create_quote_item', 'autotask_update_quote_item', 'autotask_delete_quote_item', 'autotask_get_opportunity', 'autotask_search_opportunities', 'autotask_create_opportunity', 'autotask_update_opportunity', 'autotask_search_invoices', 'autotask_get_invoice_details', 'autotask_search_contracts', 'autotask_get_contract', 'autotask_list_expiring_contracts', 'autotask_search_contract_services', 'autotask_search_contract_service_units', 'autotask_search_contract_service_bundles', 'autotask_search_contract_service_bundle_units', 'autotask_get_contract_recurring_lines', 'autotask_create_contract', 'autotask_create_contracts_bulk', 'autotask_update_contract', 'autotask_create_contract_service', 'autotask_update_contract_service']
   },
   products_and_services: {
     description: 'Products, services, and service bundles catalog',
@@ -3641,7 +3846,7 @@ export const TOOL_CATEGORIES: Record<string, { description: string; tools: strin
   },
   resources: {
     description: 'Search for Autotask resources (technicians/staff)',
-    tools: ['autotask_search_resources']
+    tools: ['autotask_search_resources', 'autotask_search_resource_roles']
   },
   configuration_items: {
     description: 'Search configuration items (assets/devices)',

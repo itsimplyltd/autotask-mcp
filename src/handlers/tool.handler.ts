@@ -10,7 +10,8 @@ import { formatCompactResponse, detectEntityType, COMPACT_SEARCH_TOOLS } from '.
 import { MappingService } from '../utils/mapping.service.js';
 import { mapWithConcurrency } from '../utils/concurrency.js';
 import { TOOL_DEFINITIONS, TOOL_CATEGORIES } from './tool.definitions.js';
-import { buildTicketCard } from './card.builder.js';
+import { buildTicketCard, type TicketCard } from './card.builder.js';
+import { buildTicketSearchParams } from './intent-router.js';
 import { markUntrustedContent } from '../utils/untrusted-content.js';
 
 // Default concurrency for company/resource name enrichment. Autotask allows
@@ -21,6 +22,21 @@ const DEFAULT_ENHANCE_CONCURRENCY = 3;
 function resolveEnhanceConcurrency(raw: string | undefined): number {
   const parsed = parseInt(raw ?? '', 10);
   return Number.isFinite(parsed) && parsed >= 1 ? parsed : DEFAULT_ENHANCE_CONCURRENCY;
+}
+
+// WYREAI-372: tool schemas mixed companyID/companyId/CompanyID across the
+// fleet; schemas now advertise the single canonical `companyID` only, but
+// existing callers on the old casings must keep working. Accept any of the
+// three on input and normalize to `companyID` (mirrored back onto the other
+// two keys so any handler code still reading the old names also sees the
+// value) before the args object reaches a handler. Explicitly preserves
+// `0` — WYRE Technology's own Autotask company id is 0, and a value check
+// here (rather than a `||`/truthy merge) is exactly the class of bug
+// WYREAI-373 is about.
+function normalizeCompanyIdAlias(args: Record<string, any>): Record<string, any> {
+  const provided = [args.companyID, args.companyId, args.CompanyID].find(v => v !== undefined);
+  if (provided === undefined) return args;
+  return { ...args, companyID: provided, companyId: provided, CompanyID: provided };
 }
 
 // Fields accepted by autotask_create_ticket / autotask_update_ticket.
@@ -47,6 +63,40 @@ const TICKET_WRITABLE_FIELDS = [
   'projectID',
   'ticketAdditionalContacts',
   'resolution',
+  'userDefinedFields'
+] as const;
+
+// Fields accepted by autotask_update_opportunity, in Autotask's own casing.
+// Keep this list in sync with the tool definition in tool.definitions.ts.
+const OPPORTUNITY_WRITABLE_FIELDS = [
+  'title',
+  'description',
+  'status',
+  'stage',
+  'probability',
+  'projectedCloseDate',
+  'ownerResourceID',
+  'contactID',
+  'opportunityCategoryID',
+  'nextStep',
+  'winReason',
+  'winReasonDetail',
+  'lossReason',
+  'lossReasonDetail',
+  'useQuoteTotals',
+  'amount',
+  'cost',
+  'onetimeRevenue',
+  'onetimeCost',
+  'monthlyRevenue',
+  'monthlyCost',
+  'quarterlyRevenue',
+  'quarterlyCost',
+  'semiannualRevenue',
+  'semiannualCost',
+  'yearlyRevenue',
+  'yearlyCost',
+  'totalAmountMonths',
   'userDefinedFields'
 ] as const;
 
@@ -86,6 +136,12 @@ export interface McpToolResult {
     type: 'text';
     text: string;
   }>;
+  /**
+   * SEP-1865: the full result payload (e.g. `{ message, data }` for
+   * ticket-detail results), distinct from the short human-readable summary
+   * in `content`. Callers needing the full data must read this field.
+   */
+  structuredContent?: Record<string, unknown>;
   isError?: boolean;
 }
 
@@ -357,7 +413,10 @@ export class AutotaskToolHandler {
         return null;
       }
 
-      if (companies.length === 1 && companies[0].id) {
+      // WYREAI-373: a truthy check here would treat WYRE Technology's own
+      // company id (0) as "no unique match found" and fall through to the
+      // multi-result picker even though there's exactly one match.
+      if (companies.length === 1 && companies[0].id != null) {
         return companies[0].id;
       }
 
@@ -442,12 +501,12 @@ export class AutotaskToolHandler {
   /**
    * Route a natural-language intent to the best matching tool with pre-filled parameters.
    */
-  private routeIntent(rawIntent: string): {
+  private async routeIntent(rawIntent: string): Promise<{
     suggestedTool: string;
     suggestedParams: Record<string, any>;
     description: string;
     requiredParams: string[];
-  } {
+  }> {
     // Extract quoted strings from original (preserves case) before lowercasing
     const quotedStrings = rawIntent.match(/["']([^"']+)["']/g)?.map(s => s.slice(1, -1)) || [];
     const intent = rawIntent.toLowerCase();
@@ -481,13 +540,15 @@ export class AutotaskToolHandler {
     if (/\b(?:tickets?|issues?|requests?)\b/.test(intent)) {
       if (/\b(?:create|open|new|submit)\b/.test(intent)) {
         const params: Record<string, any> = {};
-        if (numbers[0]) params.companyId = numbers[0];
+        if (numbers[0] !== undefined) params.companyID = numbers[0];
         if (quotedStrings[0]) params.title = quotedStrings[0];
         return {
           suggestedTool: 'autotask_create_ticket',
           suggestedParams: params,
           description: 'Create a new service ticket',
-          requiredParams: [...(!params.companyId ? ['companyId'] : []), ...(!params.title ? ['title'] : [])],
+          // WYREAI-373: params.companyID === undefined, not a truthy check
+          // — WYRE Technology's own company id (0) is a valid provided value.
+          requiredParams: [...(params.companyID === undefined ? ['companyID'] : []), ...(!params.title ? ['title'] : [])],
         };
       }
       if (/\b(?:update|change|modify|edit|assign|reassign|close)\b/.test(intent)) {
@@ -528,19 +589,17 @@ export class AutotaskToolHandler {
           requiredParams: !params.ticketId ? ['ticketId'] : [],
         };
       }
-      // Default: search tickets
-      const params: Record<string, any> = {};
-      if (quotedStrings[0]) params.searchTerm = quotedStrings[0];
-      else if (/for\s+(\w[\w\s]*?)(?:\.|$|,)/i.test(intent)) {
-        const match = intent.match(/for\s+(\w[\w\s]*?)(?:\.|$|,)/i);
-        if (match) params.searchTerm = match[1].trim();
-      }
-      if (numbers[0]) params.companyID = numbers[0];
+      // Default: search tickets. searchTerm is a ticket-number prefix only —
+      // company names resolve to companyID (WYREAI-368).
+      const ticketSearch = await buildTicketSearchParams(
+        rawIntent,
+        (searchTerm) => this.autotaskService.searchCompanies({ searchTerm })
+      );
       return {
         suggestedTool: 'autotask_search_tickets',
-        suggestedParams: params,
+        suggestedParams: ticketSearch.suggestedParams,
         description: 'Search for tickets',
-        requiredParams: [],
+        requiredParams: ticketSearch.requiredParams,
       };
     }
 
@@ -563,7 +622,7 @@ export class AutotaskToolHandler {
           suggestedTool: 'autotask_create_quote',
           suggestedParams: params,
           description: 'Create a new quote',
-          requiredParams: [...(!params.name ? ['name'] : []), 'companyId'],
+          requiredParams: [...(!params.name ? ['name'] : []), 'companyID'],
         };
       }
       const params: Record<string, any> = {};
@@ -833,22 +892,43 @@ export class AutotaskToolHandler {
     return TOOL_DEFINITIONS;
   }
 
-  /**
-   * Resolve the roleID for a ticket- or task-scoped time entry from the
-   * parent's assignedResourceRoleID. Used by autotask_create_time_entry when
-   * the caller didn't supply an explicit roleID.
-   */
-  private async resolveParentRoleID(kind: 'Ticket' | 'Task', id: number): Promise<number> {
+  private async loadParent(kind: 'Ticket' | 'Task', id: number): Promise<{ assignedResourceID?: number | null; assignedResourceRoleID?: number | null }> {
     const parent = kind === 'Ticket'
       ? await this.autotaskService.getTicket(id)
       : await this.autotaskService.getTask(id);
     if (parent === null) {
       throw new Error(`No ${kind} found matching "${id}"`);
     }
-    if (parent.assignedResourceRoleID === undefined) {
-      throw new Error(`No "assignedResourceRoleID" found for ${kind} "${id}" and no roleID provided`);
+    return parent as { assignedResourceID?: number | null; assignedResourceRoleID?: number | null };
+  }
+
+  /**
+   * The roleID for a ticket/task time entry when the caller named none.
+   *
+   * The parent's assigned role is only right when the parent is assigned to
+   * the SAME resource logging the time: a roleID must be one of the entry's
+   * resource's own roles, so a ticket assigned to a colleague contributes
+   * nothing. Everything else resolves from the resource's active roles.
+   */
+  private async resolveTimeEntryRoleID(a: Record<string, any>): Promise<number> {
+    const kind: 'Ticket' | 'Task' = a.taskID ? 'Task' : 'Ticket';
+    const parent = await this.loadParent(kind, a.taskID ?? a.ticketID);
+    if (parent.assignedResourceRoleID != null && parent.assignedResourceID === a.resourceID) {
+      return parent.assignedResourceRoleID;
     }
-    return parent.assignedResourceRoleID;
+    return this.autotaskService.resolveRoleForResource(a.resourceID);
+  }
+
+  /**
+   * Autotask refuses a ticket that names an assigned resource without that
+   * resource's role. Fill the role from the resource's own assignments (or
+   * the caller's role name) so a caller need not know role ids.
+   */
+  private async fillAssignedResourceRole(payload: Record<string, any>, roleName?: string): Promise<void> {
+    if (payload.assignedResourceID == null || payload.assignedResourceRoleID != null) {
+      return;
+    }
+    payload.assignedResourceRoleID = await this.autotaskService.resolveRoleForResource(payload.assignedResourceID, roleName);
   }
 
   /**
@@ -899,8 +979,12 @@ export class AutotaskToolHandler {
 
       // Tickets
       ['autotask_search_tickets', async (a) => {
-        // Elicitation for zero-filter ticket searches
-        const hasFilters = a.searchTerm || a.companyID || a.contactID || a.status !== undefined ||
+        // Elicitation for zero-filter ticket searches. WYREAI-373:
+        // a.companyID !== undefined, not truthy — WYRE Technology's own
+        // company id is 0, and a bare `|| a.companyID` treats that as "no
+        // filter provided," triggering an unwanted date-range elicitation
+        // and effectively dropping the company scope on the search.
+        const hasFilters = a.searchTerm || a.companyID !== undefined || a.contactID || a.status !== undefined ||
           a.priority !== undefined || a.queueID !== undefined ||
           a.assignedResourceID || a.unassigned || a.createdAfter || a.createdBefore || a.lastActivityAfter;
         if (!hasFilters && this.mcpServer) {
@@ -917,12 +1001,14 @@ export class AutotaskToolHandler {
       }],
       ['autotask_create_ticket', async (a) => {
         const payload = buildTicketPayload(a);
+        await this.fillAssignedResourceRole(payload, a.assignedResourceRoleName);
         const id = await s.createTicket(payload);
         return { result: id, message: `Successfully created ticket with ID: ${id}` };
       }],
       ['autotask_update_ticket', async (a) => {
         const { ticketId, ...rest } = a;
         const payload = buildTicketPayload(rest);
+        await this.fillAssignedResourceRole(payload, rest.assignedResourceRoleName);
         await s.updateTicket(ticketId, payload);
         return { result: ticketId, message: `Successfully updated ticket ${ticketId}` };
       }],
@@ -1051,14 +1137,18 @@ export class AutotaskToolHandler {
             delete a.category;
           }
         } else {
-          // for non-regular time entries a roleID must be set
-          // this defaults to ticketID.assignedResourceroleID or taskID.assignedResourceroleID but may be overridden
+          // A ticket/task time entry must carry a roleID, and it must be one
+          // of THIS resource's roles. Order: a role named by the caller; the
+          // parent's assigned role when the parent is assigned to this same
+          // resource; else the resource's own roles (their only one, or an
+          // error that lists them by name).
           if (!a.roleID) {
-            a.roleID = a.taskID
-              ? await this.resolveParentRoleID('Task', a.taskID)
-              : await this.resolveParentRoleID('Ticket', a.ticketID);
+            a.roleID = a.roleName
+              ? await s.resolveRoleForResource(a.resourceID, a.roleName)
+              : await this.resolveTimeEntryRoleID(a);
           }
         }
+        delete a.roleName;
         const id = await s.createTimeEntry(a); return { result: id, message: `Successfully created time entry with ID: ${id}` };
       }],
 
@@ -1104,6 +1194,26 @@ export class AutotaskToolHandler {
       // Resources
       ['autotask_search_resources', async (a) => {
         const r = await s.searchResources(a); return { result: r, message: `Found ${r.length} resources` };
+      }],
+      ['autotask_search_resource_roles', async (a) => {
+        let resourceId: number | undefined = a.resourceId;
+        if (resourceId === undefined && a.resourceName) {
+          const resource = await s.resolveResourceByName(a.resourceName);
+          if (!resource) {
+            throw new Error(`No resource found matching "${a.resourceName}"`);
+          }
+          resourceId = resource.id;
+        }
+        if (resourceId === undefined) {
+          throw new Error('Provide resourceId or resourceName.');
+        }
+        const r = await s.searchResourceRoles(resourceId, a.includeInactive === true);
+        return {
+          result: r,
+          message: r.length === 0
+            ? `Resource ${resourceId} has no ${a.includeInactive ? '' : 'active '}roles.`
+            : `Resource ${resourceId} holds ${r.length} role(s): ${r.map(x => `${x.roleName} (roleID ${x.roleID})`).join(', ')}`
+        };
       }],
 
       // Configuration Items
@@ -1279,6 +1389,20 @@ export class AutotaskToolHandler {
       ['autotask_search_ticket_attachments', async (a) => {
         const r = await s.searchTicketAttachments(a.ticketId, { pageSize: a.pageSize }); return { result: r, message: `Found ${r.length} ticket attachments` };
       }],
+      ['autotask_get_ticket_note_attachment', async (a) => {
+        const r = await s.getTicketNoteAttachment(a.ticketNoteId, a.attachmentId, {
+          includeData: a.includeData,
+          maxInlineBase64Bytes: a.maxInlineBase64Bytes,
+        });
+        if (!r) return { result: null, message: `No ticket note attachment found with ID ${a.attachmentId} on note ${a.ticketNoteId}` };
+        const message = r.dataOmittedReason
+          ? `Ticket note attachment retrieved (data omitted: oversized for inline transport)`
+          : 'Ticket note attachment retrieved successfully';
+        return { result: r, message };
+      }],
+      ['autotask_search_ticket_note_attachments', async (a) => {
+        const r = await s.searchTicketNoteAttachments(a.ticketNoteId, { pageSize: a.pageSize }); return { result: r, message: `Found ${r.length} ticket note attachments` };
+      }],
       ['autotask_create_ticket_attachment', async (a) => {
         // Never log `data` (base64 file bytes) — can be large / contain PII.
         const decodedBytes = typeof a.data === 'string'
@@ -1325,16 +1449,19 @@ export class AutotaskToolHandler {
         return { result: r, message: `Found ${r.length} quotes` };
       }],
       ['autotask_create_quote', async (a) => {
-        // Elicit company if not provided
-        if (!a.companyId && this.mcpServer) {
+        // Elicit company if not provided. WYREAI-373: `a.companyId === undefined`
+        // and `companyId !== null` (elicitCompanyId's own "not resolved" sentinel),
+        // not truthy checks — WYRE Technology's company id (0) is a real value
+        // both here and in whatever the user picks from the elicitation dialog.
+        if (a.companyId === undefined && this.mcpServer) {
           try {
             const companyId = await this.elicitCompanyId();
-            if (companyId) a = { ...a, companyId: companyId };
+            if (companyId !== null) a = { ...a, companyId: companyId };
           } catch { /* proceed without company */ }
         }
 
         // Elicit opportunity if not provided but company is known
-        if (!a.opportunityId && a.companyId && this.mcpServer) {
+        if (!a.opportunityId && a.companyId !== undefined && this.mcpServer) {
           try {
             const opps = await s.searchOpportunities({ companyId: a.companyId });
             if (opps.length > 0) {
@@ -1369,6 +1496,28 @@ export class AutotaskToolHandler {
       ['autotask_create_opportunity', async (a) => {
         const id = await s.createOpportunity({ title: a.title, companyID: a.companyId, ownerResourceID: a.ownerResourceId, status: a.status, stage: a.stage, projectedCloseDate: a.projectedCloseDate, startDate: a.startDate, probability: a.probability ?? 50, amount: a.amount ?? 0, cost: a.cost ?? 0, useQuoteTotals: a.useQuoteTotals ?? true, totalAmountMonths: a.totalAmountMonths, contactID: a.contactId, description: a.description, opportunityCategoryID: a.opportunityCategoryID });
         return { result: id, message: `Successfully created opportunity with ID: ${id}` };
+      }],
+      ['autotask_update_opportunity', async (a) => {
+        // create_opportunity advertises ownerResourceId/contactId, so accept
+        // those spellings here too rather than silently dropping them.
+        const args: Record<string, any> = {
+          ...a,
+          ownerResourceID: a.ownerResourceID ?? a.ownerResourceId,
+          contactID: a.contactID ?? a.contactId,
+        };
+        const updates: Record<string, any> = {};
+        // !== undefined, not truthy: status 0 (Not Ready To Buy), probability 0
+        // and a zeroed revenue line are all real values.
+        for (const key of OPPORTUNITY_WRITABLE_FIELDS) {
+          if (args[key] !== undefined) updates[key] = args[key];
+        }
+        if (Object.keys(updates).length === 0) {
+          throw new Error(
+            `autotask_update_opportunity: no updatable fields provided. Accepted fields: ${OPPORTUNITY_WRITABLE_FIELDS.join(', ')}`
+          );
+        }
+        await s.updateOpportunity(a.opportunityId, updates);
+        return { result: undefined, message: `Successfully updated opportunity ID: ${a.opportunityId}` };
       }],
 
       // Products
@@ -1593,7 +1742,7 @@ export class AutotaskToolHandler {
       // Intent-based router
       ['autotask_router', async (a) => {
         const rawIntent = a.intent || '';
-        const suggestion = this.routeIntent(rawIntent);
+        const suggestion = await this.routeIntent(rawIntent);
         return { result: suggestion, message: `Suggested tool: ${suggestion.suggestedTool}` };
       }],
     ]);
@@ -1639,7 +1788,13 @@ export class AutotaskToolHandler {
   /**
    * Call a tool with the given arguments
    */
-  async callTool(name: string, args: Record<string, any>): Promise<McpToolResult> {
+  async callTool(name: string, rawArgs: Record<string, any>): Promise<McpToolResult> {
+    // WYREAI-372: schemas now advertise the single canonical `companyID`
+    // spelling, but callers on the old `companyId`/`CompanyID` casing must
+    // keep working during the transition. Normalize once, here, rather than
+    // at each of the ~20 individual read sites across this file — every
+    // handler below can keep reading whichever key it already used.
+    const args = normalizeCompanyIdAlias(rawArgs);
     this.logger.debug(`Calling tool: ${name}`, args);
 
     try {
@@ -1678,9 +1833,21 @@ export class AutotaskToolHandler {
         const data = enhanced[0] || result;
         // MCP Apps: attach the normalized card payload the ui:// ticket card
         // renders from. Best-effort — a null card just means no UI surface.
+        let card: TicketCard | null = null;
         if (name === 'autotask_get_ticket_details') {
-          const card = await buildTicketCard(data, this.picklistCache, this.autotaskService, this.logger);
+          card = await buildTicketCard(data, this.picklistCache, this.autotaskService, this.logger);
           if (card) data._card = card;
+        }
+        this.logger.debug(`Successfully executed tool: ${name}`);
+        if (card) {
+          return {
+            content: [{
+              type: 'text',
+              // card.title is client-authored, so this summary line is wrapped like any other result.
+              text: markUntrustedContent(name, `Ticket ${card.ticketNumber ?? card.id}: ${card.title} (${card.priority}, ${card.status})`),
+            }],
+            structuredContent: { message, data },
+          };
         }
         responseText = JSON.stringify({ message, data });
       } else {

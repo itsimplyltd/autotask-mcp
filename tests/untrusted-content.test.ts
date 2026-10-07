@@ -76,3 +76,22 @@ describe('untrusted content markers', () => {
     expect(out).toContain(payload);
   });
 });
+
+describe('ticket note attachments and merged read tools', () => {
+  it('marks ticket note attachment results as untrusted', () => {
+    for (const name of ['autotask_get_ticket_note_attachment', 'autotask_search_ticket_note_attachments']) {
+      expect(UNTRUSTED_CONTENT_TOOLS.has(name)).toBe(true);
+      expect(markUntrustedContent(name, '{"data":[]}', ON)).toContain('<autotask-data>');
+    }
+  });
+
+  it('annotates new read tools readOnlyHint and leaves update_opportunity unannotated', async () => {
+    const { TOOL_DEFINITIONS } = await import('../src/handlers/tool.definitions.js');
+    for (const name of ['autotask_get_ticket_note_attachment', 'autotask_search_ticket_note_attachments', 'autotask_search_resource_roles']) {
+      expect(TOOL_DEFINITIONS.find(t => t.name === name)?.annotations?.readOnlyHint).toBe(true);
+    }
+    const upd = TOOL_DEFINITIONS.find(t => t.name === 'autotask_update_opportunity');
+    expect(upd).toBeDefined();
+    expect(upd!.annotations?.readOnlyHint).not.toBe(true);
+  });
+});

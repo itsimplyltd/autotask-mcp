@@ -52,6 +52,8 @@ export const UNTRUSTED_CONTENT_TOOLS: ReadonlySet<string> = new Set([
   'autotask_search_companies',
   'autotask_get_ticket_attachment',
   'autotask_search_ticket_attachments',
+  'autotask_get_ticket_note_attachment',
+  'autotask_search_ticket_note_attachments',
   'autotask_get_ticket_history',
   'autotask_search_ticket_history',
   'autotask_search_configuration_items',
