@@ -1840,11 +1840,14 @@ export class AutotaskToolHandler {
         }
         this.logger.debug(`Successfully executed tool: ${name}`);
         if (card) {
+          // IT Simply fork: the text content carries the full result, not
+          // upstream's one-line summary. Clients that read only `content`
+          // (Copilot Studio) would otherwise lose the ticket description, and
+          // the model would see client-authored text without the untrusted marker.
           return {
             content: [{
               type: 'text',
-              // card.title is client-authored, so this summary line is wrapped like any other result.
-              text: markUntrustedContent(name, `Ticket ${card.ticketNumber ?? card.id}: ${card.title} (${card.priority}, ${card.status})`),
+              text: markUntrustedContent(name, JSON.stringify({ message, data })),
             }],
             structuredContent: { message, data },
           };

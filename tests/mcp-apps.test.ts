@@ -228,12 +228,13 @@ describe('MCP Apps ticket card', () => {
       },
     };
 
-    it('returns a plain-text summary in content and the card in structuredContent', async () => {
+    it('returns the full ticket in content and the card in structuredContent', async () => {
       const service = new AutotaskService(mockConfig, logger);
       jest.spyOn(service, 'getTicket').mockResolvedValue({
         id: 48217,
         ticketNumber: 'T20260717.0042',
         title: 'VPN outage — main office',
+        description: 'Client wrote: nobody can connect since 8am',
         status: 1,
         priority: 2,
         queueID: 8,
@@ -248,9 +249,11 @@ describe('MCP Apps ticket card', () => {
       expect(result.isError).toBeFalsy();
       expect(result.content).toHaveLength(1);
       expect(result.content[0].type).toBe('text');
-      // Human-readable summary, not a JSON dump.
-      expect(() => JSON.parse(result.content[0].text)).toThrow();
+      // IT Simply fork: content carries the whole result, wrapped as untrusted,
+      // so clients that ignore structuredContent still see the description.
       expect(result.content[0].text).toContain('T20260717.0042');
+      expect(result.content[0].text).toContain('nobody can connect since 8am');
+      expect(result.content[0].text).toMatch(/^<autotask-data>/);
 
       const structured = result.structuredContent as { data?: { _card?: Record<string, unknown> } };
       expect(structured?.data?._card).toBeDefined();
