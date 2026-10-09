@@ -86,10 +86,11 @@ describe('MappingService', () => {
       expect(name).toBeNull();
     });
 
-    it('should hit direct-get on every call when lazyLoading skips pre-warm', async () => {
+    it('should hit direct-get once per request scope when lazyLoading skips pre-warm', async () => {
       // With the cache intentionally empty, getCompanyName must fall through
-      // to the per-ID direct-get path and consult it on every call (since
-      // direct-get results aren't written back to the cache).
+      // to the per-ID direct-get path. Within one request the result is
+      // memoised (one API call per id); a new request scope looks it up again
+      // because direct-get results aren't written back to the shared cache.
       (mockService as any).getCompany = jest
         .fn()
         .mockResolvedValue({ id: 42, companyName: 'Lazy Lookup Co' });
@@ -101,6 +102,10 @@ describe('MappingService', () => {
       const second = await instance.getCompanyName(42);
       expect(first).toBe('Lazy Lookup Co');
       expect(second).toBe('Lazy Lookup Co');
+      expect((mockService as any).getCompany).toHaveBeenCalledTimes(1);
+
+      instance.resetRequestScope();
+      expect(await instance.getCompanyName(42)).toBe('Lazy Lookup Co');
       expect((mockService as any).getCompany).toHaveBeenCalledTimes(2);
     });
   });
@@ -209,8 +214,12 @@ describe('MappingService', () => {
       expect(first).toBe('Stale Name From Direct Get');
       expect(second).toBe('Stale Name From Direct Get');
 
-      // The fallback MUST be consulted on every call (not cached) so that a
-      // later cache refresh can correct the name without stale overrides.
+      // Memoised for the request (one call), but NOT written to the cache:
+      // a new request scope consults the fallback again, so a later cache
+      // refresh can correct the name without stale overrides.
+      expect((mockService as any).getCompany).toHaveBeenCalledTimes(1);
+      instance.resetRequestScope();
+      await instance.getCompanyName(207);
       expect((mockService as any).getCompany).toHaveBeenCalledTimes(2);
 
       const stats = instance.getCacheStats();

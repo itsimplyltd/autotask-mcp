@@ -5,6 +5,7 @@
 
 import { AutotaskService } from '../services/autotask.service.js';
 import { Logger } from './logger.js';
+import { createLimiter } from './concurrency.js';
 
 export interface MappingCache {
   companies: Map<number, string>;
@@ -31,6 +32,13 @@ export interface MappingResult {
  * subsequent requests.
  */
 const WARM_WAIT_BUDGET_MS = 2_500;
+
+/**
+ * Max direct (per-id) Autotask lookups in flight at once from one
+ * MappingService. Autotask allows ~3 concurrent threads per API user, so a
+ * single call must not use them all.
+ */
+const DIRECT_LOOKUP_CONCURRENCY = 2;
 
 /**
  * Cross-request cache store, keyed by tenant (lowercased API username).
@@ -74,6 +82,15 @@ export class MappingService {
   private initPromise: Promise<void> | null = null;
   private refreshCompanyPromise: Promise<void> | null = null;
   private refreshResourcePromise: Promise<void> | null = null;
+
+  // Per-request memo of direct-lookup results AND in-flight promises, so a
+  // given id hits the API at most once per request (including failures).
+  // Deliberately instance-local (never in tenantCacheStore): callers
+  // impersonate different Autotask resources with different permissions, so
+  // a shared cache could expose a name the caller's own rights wouldn't.
+  private directCompanyLookups = new Map<number, Promise<string | null>>();
+  private directResourceLookups = new Map<number, Promise<string | null>>();
+  private limitDirectLookup = createLimiter(DIRECT_LOOKUP_CONCURRENCY);
 
   private cache: MappingCache;
   private autotaskService: AutotaskService;
@@ -272,15 +289,7 @@ export class MappingService {
         return cachedName;
       }
 
-      this.logger.warn(
-        `Company ${companyId} missing from paginated cache (size=${this.cache.companies.size}); falling back to direct lookup. Result will NOT be cached.`
-      );
-      const company = await this.autotaskService.getCompany(companyId);
-      if (company?.companyName) {
-        return company.companyName;
-      }
-
-      return null;
+      return await this.directCompanyLookup(companyId);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       this.logger.warn(`Failed to get company name for ID ${companyId}: ${errorMessage}`);
@@ -308,25 +317,72 @@ export class MappingService {
       }
       
       // Fallback to direct API lookup (if cache just doesn't have this specific resource)
-      this.logger.debug(`Resource ${resourceId} not in cache, attempting direct lookup`);
-      try {
-        const resource = await this.autotaskService.getResource(resourceId);
-        if (resource && resource.firstName && resource.lastName) {
-          const fullName = `${resource.firstName} ${resource.lastName}`.trim();
-          // Add to cache for future use
-          this.cache.resources.set(resourceId, fullName);
-          return fullName;
-        }
-      } catch (directError) {
-        this.logger.debug(`Direct resource lookup failed for ${resourceId}:`, directError);
-      }
-      
-      this.cache.resources.set(resourceId, 'Unknown Resource');
-      return 'Unknown Resource';
+      return await this.directResourceLookup(resourceId);
     } catch (error) {
       this.logger.error(`Failed to get resource name for ${resourceId}:`, error);
       return null;
     }
+  }
+
+  /**
+   * Start a new request scope: forget memoised direct lookups. Called at the
+   * start of each enrichment so a long-lived handler (stdio mode) never
+   * serves a stale name, and nothing is shared between requests.
+   */
+  public resetRequestScope(): void {
+    this.directCompanyLookups.clear();
+    this.directResourceLookups.clear();
+  }
+
+  /**
+   * Direct company lookup, memoised per request (result, miss and failure
+   * alike) and limited to DIRECT_LOOKUP_CONCURRENCY in flight. Not written to
+   * the tenant cache: direct-get results have been seen to disagree with the
+   * paginated list for merged/renamed companies.
+   */
+  private directCompanyLookup(companyId: number): Promise<string | null> {
+    let pending = this.directCompanyLookups.get(companyId);
+    if (!pending) {
+      this.logger.warn(
+        `Company ${companyId} missing from paginated cache (size=${this.cache.companies.size}); falling back to direct lookup (once per request, result cached for this request only).`
+      );
+      pending = this.limitDirectLookup(async () => {
+        try {
+          const company = await this.autotaskService.getCompany(companyId);
+          return company?.companyName ? company.companyName : null;
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+          this.logger.warn(`Failed to get company name for ID ${companyId}: ${errorMessage}`);
+          return null;
+        }
+      });
+      this.directCompanyLookups.set(companyId, pending);
+    }
+    return pending;
+  }
+
+  /** Direct resource lookup, memoised per request and concurrency-limited. */
+  private directResourceLookup(resourceId: number): Promise<string | null> {
+    let pending = this.directResourceLookups.get(resourceId);
+    if (!pending) {
+      this.logger.debug(`Resource ${resourceId} not in cache, attempting direct lookup`);
+      pending = this.limitDirectLookup(async () => {
+        try {
+          const resource = await this.autotaskService.getResource(resourceId);
+          if (resource && resource.firstName && resource.lastName) {
+            const fullName = `${resource.firstName} ${resource.lastName}`.trim();
+            this.cache.resources.set(resourceId, fullName);
+            return fullName;
+          }
+        } catch (directError) {
+          this.logger.debug(`Direct resource lookup failed for ${resourceId}:`, directError);
+        }
+        this.cache.resources.set(resourceId, 'Unknown Resource');
+        return 'Unknown Resource';
+      });
+      this.directResourceLookups.set(resourceId, pending);
+    }
+    return pending;
   }
 
   /**

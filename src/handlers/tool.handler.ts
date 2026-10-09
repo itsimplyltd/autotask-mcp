@@ -225,6 +225,27 @@ export class AutotaskToolHandler {
   private async enhanceItems(items: any[]): Promise<any[]> {
     try {
       const mappingService = await this.getMappingService();
+      // New request scope: direct lookups are memoised for this enrichment
+      // only, never across requests.
+      mappingService.resetRequestScope();
+      // Resolve each DISTINCT id once up front (memoised + limited to 2 in
+      // flight inside MappingService); the per-record pass below then just
+      // awaits those results instead of fanning out one API call per row.
+      const companyIds = new Set<number>();
+      const resourceIds = new Set<number>();
+      for (const item of items) {
+        if (typeof item.companyID === 'number') companyIds.add(item.companyID);
+        if (typeof item.assignedResourceID === 'number') resourceIds.add(item.assignedResourceID);
+        if (typeof item.projectLeadResourceID === 'number') resourceIds.add(item.projectLeadResourceID);
+      }
+      await mapWithConcurrency(
+        [
+          ...[...companyIds].map((id) => () => mappingService.getCompanyName(id)),
+          ...[...resourceIds].map((id) => () => mappingService.getResourceName(id)),
+        ],
+        this.enhanceConcurrency,
+        (lookup) => lookup()
+      );
       // Bound the fan-out: one item may trigger up to a few Autotask API
       // calls (company + resource names), and Autotask 429s past its
       // concurrent-thread limit. mapWithConcurrency keeps us under it so

@@ -40,3 +40,37 @@ export async function mapWithConcurrency<T, R>(
   await Promise.all(Array.from({ length: workerCount }, () => worker()));
   return results;
 }
+
+/**
+ * Create a limiter that runs async tasks with at most `limit` in flight at
+ * once; excess tasks queue FIFO. Unlike mapWithConcurrency it is for ad-hoc
+ * callers that arrive independently (e.g. parallel id lookups that share one
+ * Autotask thread budget). A rejected task rejects only its own promise.
+ */
+export function createLimiter(limit: number): <T>(task: () => Promise<T>) => Promise<T> {
+  const max = Math.max(1, Math.floor(limit) || 1);
+  let active = 0;
+  const queue: Array<() => void> = [];
+
+  const release = (): void => {
+    active--;
+    const next = queue.shift();
+    if (next) next();
+  };
+
+  return <T>(task: () => Promise<T>): Promise<T> =>
+    new Promise<T>((resolve, reject) => {
+      const run = (): void => {
+        active++;
+        let started: Promise<T>;
+        try {
+          started = Promise.resolve(task());
+        } catch (err) {
+          started = Promise.reject(err);
+        }
+        started.then(resolve, reject).finally(release);
+      };
+      if (active < max) run();
+      else queue.push(run);
+    });
+}
