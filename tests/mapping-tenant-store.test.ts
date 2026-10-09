@@ -14,7 +14,7 @@
  *     (incident 2026-06-03).
  */
 
-import { MappingService, _resetTenantCacheStore } from '../src/utils/mapping.service';
+import { MappingService, _resetTenantCacheStore, _tenantCacheStoreSize, TENANT_CACHE_MAX_ENTRIES } from '../src/utils/mapping.service';
 import { AutotaskService } from '../src/services/autotask.service';
 import { Logger } from '../src/utils/logger';
 
@@ -157,5 +157,70 @@ describe('bounded warm-up budget', () => {
     failing.mockResolvedValue([{ id: 5, companyName: 'Recovered Co' }]);
     expect(await instance.getCompanyName(5)).toBe('Recovered Co');
     expect(failing).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('impersonation-scoped store and bounds', () => {
+  const lazyOff = { lazyLoading: false };
+
+  it('separates stores for the same API user under different impersonation ids', async () => {
+    const svcA = makeMockService({
+      listAllCompanies: jest.fn().mockResolvedValue([{ id: 1, companyName: 'Secret Co' }]),
+    });
+    const svcB = makeMockService({
+      listAllCompanies: jest.fn().mockResolvedValue([{ id: 2, companyName: 'Visible Co' }]),
+      getCompany: jest.fn().mockResolvedValue(null),
+    });
+    const a = await MappingService.create(svcA, mockLogger, { ...lazyOff, tenantKey: 'api@x.com|11' });
+    const b = await MappingService.create(svcB, mockLogger, { ...lazyOff, tenantKey: 'api@x.com|22' });
+    expect(await a.getCompanyName(1)).toBe('Secret Co');
+    expect(await b.getCompanyName(1)).toBeNull();
+    expect(await b.getCompanyName(2)).toBe('Visible Co');
+    expect(svcB.listAllCompanies).toHaveBeenCalledTimes(1);
+  });
+
+  it('reuses the store for the same API user and impersonation id', async () => {
+    const s1 = makeMockService();
+    await MappingService.create(s1, mockLogger, { ...lazyOff, tenantKey: 'api@x.com|11' });
+    const s2 = makeMockService();
+    const b = await MappingService.create(s2, mockLogger, { ...lazyOff, tenantKey: 'API@x.com|11' });
+    expect(await b.getCompanyName(1)).toBe('Acme Corp');
+    expect(s2.listAllCompanies).not.toHaveBeenCalled();
+  });
+
+  it('direct lookups never write to the shared store, placeholder included', async () => {
+    const svcA = makeMockService({
+      getResource: jest.fn()
+        .mockResolvedValueOnce({ id: 99, firstName: 'Only', lastName: 'Visible' })
+        .mockRejectedValueOnce(new Error('403')),
+    });
+    const a = await MappingService.create(svcA, mockLogger, { ...lazyOff, tenantKey: 'api@x.com|11' });
+    expect(await a.getResourceName(99)).toBe('Only Visible');
+    expect(await a.getResourceName(98)).toBe('Unknown Resource');
+
+    // A second instance of the same key (next request) must not see either.
+    const svcA2 = makeMockService({ getResource: jest.fn().mockResolvedValue({ id: 99, firstName: 'Fresh', lastName: 'Name' }) });
+    const a2 = await MappingService.create(svcA2, mockLogger, { ...lazyOff, tenantKey: 'api@x.com|11' });
+    expect(await a2.getResourceName(99)).toBe('Fresh Name');
+    expect(svcA2.getResource).toHaveBeenCalledWith(99);
+  });
+
+  it('evicts the least recently used entry past the cap', async () => {
+    const first = makeMockService();
+    await MappingService.create(first, mockLogger, { lazyLoading: false, tenantKey: 'k|0' });
+    for (let i = 1; i < TENANT_CACHE_MAX_ENTRIES; i++) {
+      await MappingService.create(makeMockService(), mockLogger, { lazyLoading: false, tenantKey: `k|${i}` });
+    }
+    expect(_tenantCacheStoreSize()).toBe(TENANT_CACHE_MAX_ENTRIES);
+    await MappingService.create(makeMockService(), mockLogger, { lazyLoading: false, tenantKey: 'k|new' });
+    expect(_tenantCacheStoreSize()).toBe(TENANT_CACHE_MAX_ENTRIES);
+
+    // k|0 was oldest: it must re-walk. k|1 survived: it must not.
+    const again0 = makeMockService();
+    await MappingService.create(again0, mockLogger, { lazyLoading: false, tenantKey: 'k|0' });
+    expect(again0.listAllCompanies).toHaveBeenCalledTimes(1);
+    const again2 = makeMockService();
+    await MappingService.create(again2, mockLogger, { lazyLoading: false, tenantKey: 'k|2' });
+    expect(again2.listAllCompanies).not.toHaveBeenCalled();
   });
 });

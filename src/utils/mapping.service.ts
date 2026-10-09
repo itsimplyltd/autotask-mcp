@@ -41,7 +41,10 @@ const WARM_WAIT_BUDGET_MS = 2_500;
 const DIRECT_LOOKUP_CONCURRENCY = 2;
 
 /**
- * Cross-request cache store, keyed by tenant (lowercased API username).
+ * Cross-request cache store, keyed by tenant: lowercased API username plus
+ * the impersonated resource id (see AutotaskService.getTenantKey). Impersonated
+ * calls see only what that technician may see, so a list pre-warmed for one
+ * technician must never be served to another on the same API user.
  *
  * In gateway mode a new MappingService is constructed per request; without
  * this store every request re-ran the full company pre-warm (30s+ on large
@@ -54,21 +57,42 @@ const DIRECT_LOOKUP_CONCURRENCY = 2;
 const tenantCacheStore = new Map<string, MappingCache>();
 
 /**
+ * Max entries in tenantCacheStore. The key is (API user, impersonated
+ * resource), so the store grows with the number of staff; least recently used
+ * entries are evicted past this cap. Staleness is bounded separately by the
+ * per-entry TTL (cacheExpiryMs, checked against lastUpdated).
+ */
+export const TENANT_CACHE_MAX_ENTRIES = 50;
+
+/**
  * Reset the tenant cache store. Intended for tests only.
  */
 export function _resetTenantCacheStore(): void {
   tenantCacheStore.clear();
 }
 
+export function _tenantCacheStoreSize(): number {
+  return tenantCacheStore.size;
+}
+
 function tenantCacheFor(tenantKey: string): MappingCache {
   let entry = tenantCacheStore.get(tenantKey);
-  if (!entry) {
+  if (entry) {
+    // Refresh recency: Map iterates in insertion order, so re-insert.
+    tenantCacheStore.delete(tenantKey);
+    tenantCacheStore.set(tenantKey, entry);
+  } else {
     entry = {
       companies: new Map<number, string>(),
       resources: new Map<number, string>(),
       lastUpdated: { companies: null, resources: null },
     };
     tenantCacheStore.set(tenantKey, entry);
+    while (tenantCacheStore.size > TENANT_CACHE_MAX_ENTRIES) {
+      const oldest = tenantCacheStore.keys().next().value;
+      if (oldest === undefined) break;
+      tenantCacheStore.delete(oldest);
+    }
   }
   return entry;
 }
@@ -361,7 +385,8 @@ export class MappingService {
     return pending;
   }
 
-  /** Direct resource lookup, memoised per request and concurrency-limited. */
+  /** Direct resource lookup, memoised per request and concurrency-limited.
+   * Never written to the shared store (names and the placeholder are per-caller). */
   private directResourceLookup(resourceId: number): Promise<string | null> {
     let pending = this.directResourceLookups.get(resourceId);
     if (!pending) {
@@ -371,13 +396,11 @@ export class MappingService {
           const resource = await this.autotaskService.getResource(resourceId);
           if (resource && resource.firstName && resource.lastName) {
             const fullName = `${resource.firstName} ${resource.lastName}`.trim();
-            this.cache.resources.set(resourceId, fullName);
             return fullName;
           }
         } catch (directError) {
           this.logger.debug(`Direct resource lookup failed for ${resourceId}:`, directError);
         }
-        this.cache.resources.set(resourceId, 'Unknown Resource');
         return 'Unknown Resource';
       });
       this.directResourceLookups.set(resourceId, pending);

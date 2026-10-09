@@ -150,8 +150,10 @@ export class AutotaskService {
    * request. Null when credentials aren't configured.
    */
   getTenantKey(): string | null {
-    const username = this.config.autotask.username;
-    return username ? username.toLowerCase() : null;
+    const { username, impersonationResourceId } = this.config.autotask;
+    // The impersonated resource is part of the key: Autotask applies that
+    // technician's permissions, so cached name lists differ per technician.
+    return username ? `${username.toLowerCase()}|${impersonationResourceId ?? 'none'}` : null;
   }
 
   /**
