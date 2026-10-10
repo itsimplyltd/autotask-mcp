@@ -48,6 +48,21 @@ describe('GW-001: rawRequest path has no query string or fragment', () => {
     }
   });
 
+  test('POST paging (/query/next?paging=...) still goes through', async () => {
+    const fetchMock = jest
+      .spyOn(global, 'fetch' as any)
+      .mockResolvedValue({ ok: true, status: 200, headers: { get: () => null }, text: async () => '{"items":[]}' } as any);
+    try {
+      await expect(makeClient().rawRequest('POST', '/Tickets/query/next?paging=%7b%22pageSize%22%3a500%7d', {})).resolves.toEqual({ items: [] });
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+
+  test.each(['/Tickets/1/Notes?paging=x', '/Tickets/query/next?paging=x&y=1'])('refuses %s on POST', async (path) => {
+    await expect(makeClient().rawRequest('POST', path, {})).rejects.toThrow(/must not contain/);
+  });
+
   test('a clean /query path still goes through', async () => {
     const fetchMock = jest
       .spyOn(global, 'fetch' as any)

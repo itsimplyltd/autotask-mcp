@@ -142,9 +142,14 @@ function assertSafeRelativePath(path: string): void {
 
 // ITSL GW-001 (10 Oct 2026): on a non-GET, a '?' or '#' (raw or percent-encoded)
 // let a write endpoint pass a gateway check that matched the path's end against
-// /query. GETs keep query strings: paging follows /query/next?paging=... URLs.
+// /query. GETs keep query strings. The one query a non-GET may carry is Autotask
+// paging: POST /<Entity>/query/next?paging=<encoded json>.
 function assertNoQueryInWritePath(method: string, path: string): void {
-  if (method !== 'GET' && /[?#]|%3f|%23/i.test(path)) {
+  if (method === 'GET') return;
+  const q = path.indexOf('?');
+  const base = q === -1 ? path : path.slice(0, q);
+  const paging = q !== -1 && /\/query\/next\/?$/i.test(base) && /^paging=[^?#&]*$/i.test(path.slice(q + 1));
+  if (path.includes('#') || /%3f|%23/i.test(base) || (q !== -1 && !paging)) {
     throw new Error('Autotask rawRequest: path must not contain "?" or "#" - pass query parameters in queryParams');
   }
 }
