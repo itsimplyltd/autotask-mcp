@@ -16,6 +16,10 @@ on:
 permissions:
   contents: read
 
+# @wyre-* dependencies live on GitHub Packages, which needs a token even to read.
+env:
+  NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
 jobs:
   gate:
     runs-on: ubuntu-latest
@@ -24,6 +28,11 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '26'
+      - name: Configure npm for GitHub Packages
+        run: |
+          echo "@wyre-ai:registry=https://npm.pkg.github.com" >> .npmrc
+          echo "@wyre-technology:registry=https://npm.pkg.github.com" >> .npmrc
+          echo "//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}" >> .npmrc
       - name: npm ci
         run: npm ci --ignore-scripts
       - name: npm audit signatures
