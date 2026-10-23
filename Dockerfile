@@ -1,6 +1,6 @@
 # Multi-stage build for efficient container size
 # node:26-alpine multi-arch index pinned by digest, resolved from Docker Hub 2026-10-02 (Node 26.10.0). Re-resolve deliberately when bumping (security review S5).
-FROM node:26-alpine@sha256:0b36e8c136b94cd4fcf02188228e76c31ad5872eef3fec8cbd2eee500cfd9e80 AS builder
+FROM node:26.12.1-alpine@sha256:40cd011b55415bc894e45b02fdd5a5dfde056921b7d23a64c74f80497af48797 AS builder
 
 # Build arguments
 ARG VERSION="unknown"
@@ -46,7 +46,7 @@ RUN if [ "${VERSION}" != "unknown" ]; then \
 RUN npm run build
 
 # Production stage
-FROM node:26-alpine@sha256:0b36e8c136b94cd4fcf02188228e76c31ad5872eef3fec8cbd2eee500cfd9e80 AS production
+FROM node:26.12.1-alpine@sha256:40cd011b55415bc894e45b02fdd5a5dfde056921b7d23a64c74f80497af48797 AS production
 
 # Pull latest Alpine package fixes (e.g. OpenSSL) even when the base layer is cached
 RUN apk -U upgrade --no-cache
