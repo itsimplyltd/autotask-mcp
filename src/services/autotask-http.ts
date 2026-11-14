@@ -303,6 +303,9 @@ export class AutotaskHttpClient {
         method,
         headers: this.headers(),
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        // A redirect must fail closed: following one would replay our
+        // credential headers to whatever host the response names.
+        redirect: 'error',
       };
       if (body !== undefined) {
         init.body = JSON.stringify(body);
