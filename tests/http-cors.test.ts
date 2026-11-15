@@ -37,7 +37,7 @@ describe('HTTP transport CORS preflight', () => {
 
   beforeEach(async () => {
     // HTTP mode refuses to boot without the gateway S2S secret (>= 32 chars).
-    process.env.CONDUIT_S2S_SECRET = 'cors-test-secret-0123456789abcdefghijklmnop';
+    process.env.CONDUIT_S2S_SECRET = 'cors-test-secret-' + 'x'.repeat(40);
     port = pickPort();
     const logger = new Logger('error', 'simple');
     server = new AutotaskMcpServer(buildMcpConfig(), logger, buildEnvConfig(port));

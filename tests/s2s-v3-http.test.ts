@@ -10,10 +10,10 @@ import type { EnvironmentConfig } from '../src/utils/config';
 import type { McpServerConfig } from '../src/types/mcp';
 import { s2sHeaderV1, s2sHeaderV3 } from './helpers/s2s-signers';
 
-const SECRET = 'test-s2s-secret-0123456789abcdefghijklmnopqrstuvwxyz';
+const SECRET = 'test-s2s-secret-' + 'x'.repeat(40);
 const CREDS: Record<string, string> = {
   'x-api-key': 'api-user@example.com',
-  'x-api-secret': 'api-secret-value',
+  'x-api-secret': 'not-a-real-secret',
   'x-integration-code': 'integration-code',
   'x-impersonation-resource-id': '30',
 };
