@@ -288,7 +288,9 @@ export async function resolveAutotaskApiUrl(
   try {
     response = await fetchImpl(lookupUrl, {
       method: 'GET',
-      headers: { Accept: 'application/json' }
+      headers: { Accept: 'application/json' },
+      // Fail closed on a redirect rather than follow it to a host the response names.
+      redirect: 'error'
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

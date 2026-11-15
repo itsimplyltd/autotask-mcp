@@ -27,7 +27,45 @@ import { AutotaskResourceHandler } from '../handlers/resource.handler.js';
 import { AutotaskToolHandler } from '../handlers/tool.handler.js';
 import { TOOL_DEFINITIONS, TOOL_CATEGORIES } from '../handlers/tool.definitions.js';
 import { registerPromptHandlers } from './prompts.js';
-import { verifyS2sHeader, S2S_HEADER } from './s2s-verify.js';
+import { verifyS2sHeader } from './s2s-verify.js';
+import {
+  NonceCache,
+  ReportRateLimiter,
+  assertRequireSignedHeaders,
+  effectiveMinVersion,
+  handleGatewayRequest,
+} from '../itsl/s2s-v3.js';
+
+/** Audience cred-router passes for vendor 'autotask' (finishSignedProxyRequest aud defaults to the vendor id). */
+const S2S_AUDIENCE = 'autotask';
+/**
+ * The legacy version this backend enforces today: v1 (t=..,v1=..) whenever
+ * CONDUIT_S2S_SECRET is set. It has no v2 verifier and no env var to refuse v1.
+ */
+const S2S_FLOOR = 1;
+const MIN_S2S_SECRET_LENGTH = 32;
+
+/**
+ * Headers cred-router sets on every proxied autotask request (credentialsForTier
+ * + IMPERSONATION_HEADER) that this backend trusts as credential / identity /
+ * impersonation. Present-but-unsigned fails the v3 check in report mode too.
+ * x-api-url is NOT set by cred-router but IS read by parseCredentialsFromHeaders
+ * as the Autotask base URL; listing it means a v3 request can never carry an
+ * unsigned one (absent stays fine). Lower-case, exact, never an ingress-exempt name.
+ */
+export const REQUIRE_SIGNED_HEADERS = [
+  'x-api-key',
+  'x-api-secret',
+  'x-integration-code',
+  'x-impersonation-resource-id',
+  'x-api-url',
+];
+assertRequireSignedHeaders(REQUIRE_SIGNED_HEADERS);
+
+/** One per process: v3 nonces are single-use inside the skew window. */
+const nonceCache = new NonceCache();
+const reportRateLimiter = new ReportRateLimiter();
+const failureLimiter = new ReportRateLimiter();
 
 export class AutotaskMcpServer {
   private config: McpServerConfig;
@@ -306,6 +344,23 @@ export class AutotaskMcpServer {
     const host = this.envConfig?.transport?.host || '0.0.0.0';
     const isGatewayMode = this.envConfig?.auth?.mode === 'gateway';
 
+    // Boot check: HTTP mode never starts without the gateway S2S secret. An
+    // empty secret used to mean "S2S disabled"; that is now a refusal to start.
+    // The value is never logged, nor its length.
+    const s2sSecret = process.env.CONDUIT_S2S_SECRET || '';
+    if (s2sSecret.length < MIN_S2S_SECRET_LENGTH) {
+      throw new Error(
+        `Refusing to start HTTP server: CONDUIT_S2S_SECRET must be set to at least ${MIN_S2S_SECRET_LENGTH} characters`
+      );
+    }
+    // Operator switch for the S2S v3 rollout, passed through raw: anything that
+    // is not an integer 1..3 is treated as 3 by the verifier (a typo only tightens).
+    const minVersion = Number(process.env.ITSL_S2S_MIN_VERSION ?? String(S2S_FLOOR));
+    const effectiveMin = effectiveMinVersion(S2S_FLOOR, minVersion);
+    this.logger.info(
+      `S2S gateway auth: effective minimum version ${effectiveMin}, header rule ${effectiveMin === 3 ? 'enforced' : 'report mode'}`
+    );
+
     // One dual-era handler for the process: modern (2026-07-28 envelope)
     // traffic is served natively; legacy 2025-era traffic is served by the
     // default stateless fallback ('stateless') — a fresh factory-built server
@@ -320,8 +375,6 @@ export class AutotaskMcpServer {
     });
 
     this.httpServer = createServer((req: IncomingMessage, res: ServerResponse) => {
-      const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
-
       // CORS headers applied to every response so browser-based MCP clients
       // (e.g. claude.ai custom connectors) can reach the server. '*' is safe
       // because credentials are carried via request headers, not cookies.
@@ -341,11 +394,16 @@ export class AutotaskMcpServer {
         return;
       }
 
-      // Health endpoint - no auth required
-      if (url.pathname === '/health') {
+      // Raw target, not a parsed URL: the signed path is exactly what was sent.
+      const rawTarget = req.url ?? '/';
+      const queryAt = rawTarget.indexOf('?');
+      const pathname = queryAt === -1 ? rawTarget : rawTarget.slice(0, queryAt);
+
+      // Health endpoint - no auth required (the container probe path)
+      if (pathname === '/health') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         // `mcpTransport` (not `transport`) to avoid confusion with the network
-        // scheme — the value refers to the MCP transport type (stdio vs
+        // scheme: the value refers to the MCP transport type (stdio vs
         // Streamable HTTP), not whether the service is served over HTTP/HTTPS.
         // `version` is included so operators can curl-check which build is
         // running without going through the MCP handshake.
@@ -359,77 +417,74 @@ export class AutotaskMcpServer {
         return;
       }
 
-      // MCP endpoint — dual-era handler (fresh factory-built server per
-      // request in both eras; nothing is shared between requests)
-      if (url.pathname === '/mcp') {
-        // Gateway S2S verification (gateway#377 parity). Runs before any
-        // credential extraction — see src/mcp/s2s-verify.ts. Empty secret
-        // means S2S enforcement isn't provisioned for this vendor yet, so
-        // we don't call verifyS2sHeader at all (dark-by-default).
-        const s2sSecret = process.env.CONDUIT_S2S_SECRET || '';
-        if (s2sSecret) {
-          const s2sHeader = req.headers[S2S_HEADER] as string | undefined;
-          if (!verifyS2sHeader(s2sHeader, s2sSecret)) {
-            this.logger.warn('Rejected request with missing/invalid gateway S2S header');
-            res.writeHead(401, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({
-              jsonrpc: '2.0',
-              error: {
-                code: -32001,
-                message: 'Unauthorized: missing or invalid gateway S2S authentication header',
-              },
-              id: null,
-            }));
-            return;
-          }
-        }
-
-        // In gateway mode, require the injected credential headers up front.
-        // Falling through to the env-configured handlers would serve the
-        // server operator's tenant data to whoever sent the unauthenticated
-        // request — a cross-tenant leak. Reject explicitly instead. The
-        // factory re-reads the same headers from ctx.requestInfo to build the
-        // per-request, tenant-isolated AutotaskService.
-        if (isGatewayMode) {
-          const credentials = parseCredentialsFromHeaders(req.headers as Record<string, string | string[] | undefined>);
-          if (!credentials.username || !credentials.secret || !credentials.integrationCode) {
-            res.writeHead(401, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({
-              jsonrpc: '2.0',
-              error: {
-                code: -32001,
-                message: 'Unauthorized: missing required gateway credentials (X-API-Key, X-API-Secret, X-Integration-Code)',
-              },
-              id: null,
-            }));
-            return;
-          }
-        }
-
-        // Delegate to the dual-era handler. Legacy (2025) traffic is served
-        // per-request statelessly; modern (2026-07-28) traffic natively.
-        // Legacy-era GET/DELETE answer 405 inside the handler, as before.
-        // Cast: the adapter's duck-typed NodeIncomingMessageLike declares
-        // `method?: string`, which node:http's IncomingMessage doesn't satisfy
-        // under exactOptionalPropertyTypes (v2.0.0-beta.5 typings papercut).
-        nodeMcpHandler(req as unknown as Parameters<typeof nodeMcpHandler>[0], res).catch((err) => {
-          this.logger.error('MCP transport error:', err);
-          if (!res.headersSent) {
-            res.writeHead(500, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({
-              jsonrpc: '2.0',
-              error: { code: -32603, message: 'Internal error' },
-              id: null,
-            }));
-          }
-        });
-
+      // 404 for everything except the MCP path, before any auth.
+      if (pathname !== '/mcp') {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Not found', endpoints: ['/mcp', '/health'] }));
         return;
       }
 
-      // 404 for everything else
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Not found', endpoints: ['/mcp', '/health'] }));
+      // MCP endpoint. The shared wrapper runs the S2S check FIRST, reads the
+      // body once, and never rejects: an aborted upload or a throwing handler
+      // ends that request, not the process. startHttpTransport refused to boot
+      // without a >= 32 char secret, so there is no unauthenticated path.
+      void handleGatewayRequest(
+        req,
+        res,
+        {
+          secret: s2sSecret,
+          aud: S2S_AUDIENCE,
+          floor: S2S_FLOOR,
+          minVersion,
+          // Legacy v1 verifier, unchanged: returns its version on success.
+          verifyLegacy: (headerValue) => (verifyS2sHeader(headerValue, s2sSecret) ? 1 : 0),
+          nonceCache,
+          reportLimiter: reportRateLimiter,
+          failureLimiter,
+          logger: this.logger,
+          requireSignedHeaders: REQUIRE_SIGNED_HEADERS,
+        },
+        async ({ parsedBody }) => {
+          // In gateway mode, require the injected credential headers up front.
+          // Falling through to the env-configured handlers would serve the
+          // server operator's tenant data to whoever sent the unauthenticated
+          // request: a cross-tenant leak. Reject explicitly instead. The
+          // factory re-reads the same headers from ctx.requestInfo to build the
+          // per-request, tenant-isolated AutotaskService.
+          if (isGatewayMode) {
+            const credentials = parseCredentialsFromHeaders(req.headers as Record<string, string | string[] | undefined>);
+            if (!credentials.username || !credentials.secret || !credentials.integrationCode) {
+              res.writeHead(401, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({
+                jsonrpc: '2.0',
+                error: {
+                  code: -32001,
+                  message: 'Unauthorized: missing required gateway credentials (X-API-Key, X-API-Secret, X-Integration-Code)',
+                },
+                id: null,
+              }));
+              return;
+            }
+          }
+
+          // Delegate to the dual-era handler. The wrapper already consumed the
+          // body (it hashed those exact bytes), so the parsed value is handed
+          // over. Legacy-era GET/DELETE answer 405 inside the handler, as before.
+          // Cast: the adapter's duck-typed NodeIncomingMessageLike declares
+          // `method?: string`, which node:http's IncomingMessage doesn't satisfy.
+          await nodeMcpHandler(req as unknown as Parameters<typeof nodeMcpHandler>[0], res, parsedBody).catch((err) => {
+            this.logger.error('MCP transport error:', err);
+            if (!res.headersSent) {
+              res.writeHead(500, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({
+                jsonrpc: '2.0',
+                error: { code: -32603, message: 'Internal error' },
+                id: null,
+              }));
+            }
+          });
+        },
+      );
     });
 
     await new Promise<void>((resolve) => {

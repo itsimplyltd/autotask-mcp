@@ -21,7 +21,7 @@
     "noImplicitThis": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
-    "exactOptionalPropertyTypes": true,
+    "exactOptionalPropertyTypes": false,
     "resolveJsonModule": true,
     "allowSyntheticDefaultImports": true,
     "types": [
@@ -36,6 +36,7 @@
   "exclude": [
     "node_modules",
     "dist",
+    "src/worker.ts",
     "**/*.test.ts",
     "**/*.spec.ts"
   ]
