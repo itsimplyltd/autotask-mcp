@@ -1,5 +1,3 @@
 bed34623486e8b2bfff5bbb7d08efa4f1a5f87d6:README.md:curl-auth-header:303
 14d568223c9269de2d5e3e2eba5056351ca3e82d:docs/MIGRATION_GUIDE.md:curl-auth-header:106
 14d568223c9269de2d5e3e2eba5056351ca3e82d:docs/MIGRATION_GUIDE.md:curl-auth-header:181
-# A made-up test secret in a superseded commit of this branch (replaced with a low-entropy value in the next commit). Not a real credential.
-cb3dbd028226e2b626b515d6af6941f5c673e424:tests/http-cors.test.ts:generic-api-key:40
